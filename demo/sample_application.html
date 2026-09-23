@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Senior Full Stack Engineer — Stripe Careers (Adonis Demo Application)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-slate-900 py-12 px-6">
+  <div class="max-w-2xl mx-auto bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+    
+    <!-- Job Header -->
+    <div class="bg-indigo-900 text-white p-8">
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-xs font-bold tracking-widest uppercase bg-indigo-800 text-indigo-200 px-3 py-1 rounded-full">Engineering • Full Time</span>
+        <span class="text-xs text-indigo-300">San Francisco, CA / Remote</span>
+      </div>
+      <h1 class="text-2xl font-black mb-2">Senior Full Stack Engineer</h1>
+      <p class="text-sm text-indigo-200 leading-relaxed">
+        Join our core infrastructure and payments team. We are looking for engineers skilled in React, TypeScript, Python, and cloud services to build scalable developer APIs.
+      </p>
+    </div>
+
+    <!-- Application Form simulating Greenhouse / Lever ATS -->
+    <form id="application_form" class="p-8 space-y-6">
+      <div class="border-b border-slate-200 pb-4">
+        <h2 class="text-lg font-bold text-slate-800">Submit Your Application</h2>
+        <p class="text-xs text-slate-500">Test Adonis Chrome Extension on this form to see it autofill and highlight fields.</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label for="first_name" class="block text-xs font-semibold text-slate-700 mb-1">First Name *</label>
+          <input type="text" id="first_name" name="first_name" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+        </div>
+        <div>
+          <label for="last_name" class="block text-xs font-semibold text-slate-700 mb-1">Last Name *</label>
+          <input type="text" id="last_name" name="last_name" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label for="email" class="block text-xs font-semibold text-slate-700 mb-1">Email *</label>
+          <input type="email" id="email" name="email" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+        </div>
+        <div>
+          <label for="phone" class="block text-xs font-semibold text-slate-700 mb-1">Phone *</label>
+          <input type="tel" id="phone" name="phone" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+        </div>
+      </div>
+
+      <div>
+        <label for="location" class="block text-xs font-semibold text-slate-700 mb-1">Current Location (City, State) *</label>
+        <input type="text" id="location" name="location" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label for="linkedin" class="block text-xs font-semibold text-slate-700 mb-1">LinkedIn Profile</label>
+          <input type="url" id="linkedin" name="urls[LinkedIn]" placeholder="https://linkedin.com/in/..." class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+        </div>
+        <div>
+          <label for="github" class="block text-xs font-semibold text-slate-700 mb-1">GitHub Profile</label>
+          <input type="url" id="github" name="urls[GitHub]" placeholder="https://github.com/..." class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label for="salary_expectation" class="block text-xs font-semibold text-slate-700 mb-1">Desired Compensation / Salary Expectations</label>
+          <input type="text" id="salary_expectation" name="salary" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+        </div>
+        <div>
+          <label for="notice_period" class="block text-xs font-semibold text-slate-700 mb-1">Earliest Available Start Date / Notice Period</label>
+          <input type="text" id="notice_period" name="notice_period" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+        </div>
+      </div>
+
+      <div>
+        <label for="work_authorization" class="block text-xs font-semibold text-slate-700 mb-1">Are you authorized to work in the United States?</label>
+        <select id="work_authorization" name="work_auth" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+          <option value="">Please select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="why_company" class="block text-xs font-semibold text-slate-700 mb-1">Why do you want to work at this company? *</label>
+        <textarea id="why_company" name="why_company" rows="4" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"></textarea>
+      </div>
+
+      <div>
+        <label for="cover_letter" class="block text-xs font-semibold text-slate-700 mb-1">Cover Letter & Additional Notes</label>
+        <textarea id="cover_letter" name="cover_letter" rows="4" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"></textarea>
+      </div>
+
+      <div class="pt-4 border-t border-slate-200 flex items-center justify-between">
+        <p class="text-xs text-slate-500">Adonis will highlight filled fields. Review them before clicking Submit.</p>
+        <button type="button" onclick="alert('Submission simulated successfully!')" class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-xl shadow-lg transition">
+          Submit Application
+        </button>
+      </div>
+    </form>
+  </div>
+</body>
+</html>

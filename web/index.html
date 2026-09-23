@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Adonis — Autonomous Job Copilot & Resume Studio</title>
+  <!-- Tailwind CSS CDN for instant, zero-build dashboard -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            },
+            dark: {
+              800: '#111827',
+              900: '#0b0f19',
+              950: '#06090e',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  </style>
+</head>
+<body class="bg-dark-950 text-slate-100 min-h-screen flex flex-col">
+
+  <!-- Top Navigation -->
+  <header class="border-b border-slate-800 bg-dark-900/80 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-cyan-400 flex items-center justify-center font-black text-xl text-white shadow-lg shadow-brand-500/20">
+          A
+        </div>
+        <div>
+          <span class="font-extrabold text-lg tracking-wider text-white">ADONIS</span>
+          <span class="text-xs ml-2 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">AI Job Copilot</span>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="flex space-x-2 bg-slate-900 p-1 rounded-xl border border-slate-800 text-sm">
+        <button onclick="switchTab('profile')" id="tab-profile" class="tab-btn px-4 py-1.5 rounded-lg font-medium transition bg-brand-600 text-white shadow">
+          Profile & Resume Vault
+        </button>
+        <button onclick="switchTab('studio')" id="tab-studio" class="tab-btn px-4 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white">
+          AI Resume & Match Studio
+        </button>
+        <button onclick="switchTab('tracker')" id="tab-tracker" class="tab-btn px-4 py-1.5 rounded-lg font-medium transition text-slate-400 hover:text-white">
+          Application Tracker
+        </button>
+      </nav>
+
+      <div class="flex items-center space-x-4">
+        <span id="backend-indicator" class="text-xs flex items-center space-x-1.5 text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span>Core API Active</span>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+
+    <!-- TAB 1: PROFILE & RESUME VAULT -->
+    <section id="panel-profile" class="space-y-8">
+      
+      <!-- Resume Upload Card (PDF, DOCX, Image) -->
+      <div class="bg-dark-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
+        <div class="absolute -right-10 -bottom-10 w-48 h-48 bg-brand-600/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div class="max-w-2xl">
+          <h2 class="text-xl font-bold text-white mb-1">Ingest Base Resume</h2>
+          <p class="text-sm text-slate-400 mb-4">
+            Upload your existing resume in <strong class="text-slate-200">PDF, Microsoft Word (.docx), or Image (.png, .jpg)</strong> format. Adonis will parse it and populate your profile vault automatically.
+          </p>
+
+          <div id="dropzone" class="border-2 border-dashed border-slate-700 hover:border-brand-500 transition rounded-xl p-8 text-center cursor-pointer bg-slate-900/50">
+            <svg class="mx-auto h-12 w-12 text-slate-500 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            <p class="text-sm font-medium text-slate-300">Click to upload or drag & drop</p>
+            <p class="text-xs text-slate-500 mt-1">PDF, DOCX, PNG, JPG (Max 15MB)</p>
+            <input type="file" id="resume-file-input" class="hidden" accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.webp">
+          </div>
+
+          <div id="upload-status" class="mt-3 text-xs hidden"></div>
+        </div>
+      </div>
+
+      <!-- Candidate Profile Form -->
+      <div class="bg-dark-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+        <div class="flex items-center justify-between mb-6 pb-4 border-b border-slate-800">
+          <div>
+            <h2 class="text-xl font-bold text-white">Master Candidate Vault</h2>
+            <p class="text-xs text-slate-400">This data is referenced by Adonis when autofilling forms and generating tailored resumes.</p>
+          </div>
+          <button onclick="saveProfile()" class="px-5 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-sm transition shadow-lg shadow-brand-600/30 flex items-center space-x-2">
+            <span>💾 Save Profile</span>
+          </button>
+        </div>
+
+        <form id="profile-form" class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">First Name</label>
+              <input type="text" id="p-first-name" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Last Name</label>
+              <input type="text" id="p-last-name" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Email</label>
+              <input type="email" id="p-email" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Phone Number</label>
+              <input type="text" id="p-phone" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Location</label>
+              <input type="text" id="p-location" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Professional Headline</label>
+              <input type="text" id="p-headline" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">LinkedIn URL</label>
+              <input type="text" id="p-linkedin" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">GitHub URL</label>
+              <input type="text" id="p-github" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Portfolio / Personal Website</label>
+              <input type="text" id="p-portfolio" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Executive Summary</label>
+            <textarea id="p-summary" rows="3" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-white focus:outline-none focus:border-brand-500"></textarea>
+          </div>
+
+          <!-- Screening Defaults -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-5 pt-4 border-t border-slate-800">
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Work Authorization</label>
+              <input type="text" id="p-work-auth" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Salary Expectations</label>
+              <input type="text" id="p-salary" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Notice Period / Start Date</label>
+              <input type="text" id="p-notice" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+          </div>
+
+          <!-- Skills Bank -->
+          <div class="pt-4 border-t border-slate-800">
+            <h3 class="text-sm font-bold text-white mb-2">Master Skills Bank (Comma separated)</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Programming Languages</label>
+                <input type="text" id="p-skills-lang" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+              </div>
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Frameworks & Libraries</label>
+                <input type="text" id="p-skills-frame" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+              </div>
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Cloud, DevOps & Infrastructure</label>
+                <input type="text" id="p-skills-cloud" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+              </div>
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Databases & Storage</label>
+                <input type="text" id="p-skills-db" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- TAB 2: AI RESUME & MATCH STUDIO -->
+    <section id="panel-studio" class="hidden space-y-8">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        
+        <!-- Input Job Description -->
+        <div class="bg-dark-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col">
+          <h2 class="text-xl font-bold text-white mb-2">Target Job Description</h2>
+          <p class="text-xs text-slate-400 mb-4">Paste any job posting text below. Adonis will extract keywords, calculate ATS compatibility, and curate your resume and screening answers.</p>
+
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Company Name</label>
+              <input type="text" id="studio-company" placeholder="e.g. Stripe, Airbnb, Google" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 mb-1">Job Title</label>
+              <input type="text" id="studio-title" placeholder="e.g. Senior Full Stack Engineer" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+            </div>
+          </div>
+
+          <div class="flex-1 flex flex-col">
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Job Posting Full Text / Requirements</label>
+            <textarea id="studio-job-text" rows="12" placeholder="Paste the job description, responsibilities, and requirements here..." class="w-full flex-1 bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-white focus:outline-none focus:border-brand-500 font-mono text-xs"></textarea>
+          </div>
+
+          <button onclick="runJobCuration()" id="btn-studio-curate" class="mt-4 w-full py-3 rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 font-bold text-white text-sm shadow-lg shadow-brand-600/30 transition flex items-center justify-center space-x-2">
+            <span>✨ Run AI Curation & ATS Optimization</span>
+          </button>
+        </div>
+
+        <!-- Curation Results & ATS Output -->
+        <div class="bg-dark-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col">
+          <h2 class="text-xl font-bold text-white mb-2">ATS Analysis & Tailored Output</h2>
+          <p class="text-xs text-slate-400 mb-4">Dynamically curated resume attributes matching this specific role.</p>
+
+          <div id="studio-empty-state" class="flex-1 flex flex-col items-center justify-center text-center p-8 border border-dashed border-slate-800 rounded-xl">
+            <span class="text-4xl mb-3">🎯</span>
+            <h4 class="text-sm font-semibold text-slate-300">No Job Analyzed Yet</h4>
+            <p class="text-xs text-slate-500 max-w-xs mt-1">Enter a job description on the left and click 'Run AI Curation' to view the tailored match score, skills, and download ATS documents.</p>
+          </div>
+
+          <div id="studio-results" class="hidden flex-1 space-y-5">
+            <!-- Score Card -->
+            <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl flex items-center justify-between">
+              <div>
+                <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider block">ATS Match Score</span>
+                <span id="res-score" class="text-3xl font-extrabold text-emerald-400">88%</span>
+              </div>
+              <div class="flex space-x-2">
+                <button onclick="downloadTailoredResume('pdf')" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white border border-slate-700 transition flex items-center space-x-1.5">
+                  <span>📄 Download PDF</span>
+                </button>
+                <button onclick="downloadTailoredResume('docx')" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white border border-slate-700 transition flex items-center space-x-1.5">
+                  <span>📝 Download DOCX</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Tailored Headline -->
+            <div>
+              <span class="text-xs font-semibold text-slate-400 block mb-1">Tailored Resume Headline</span>
+              <p id="res-headline" class="text-sm text-slate-200 bg-slate-900/80 p-2.5 rounded-lg border border-slate-800"></p>
+            </div>
+
+            <!-- Matching Skills -->
+            <div>
+              <span class="text-xs font-semibold text-emerald-400 block mb-1">Matching High-Priority Skills</span>
+              <div id="res-matching-skills" class="flex flex-wrap gap-1.5"></div>
+            </div>
+
+            <!-- Missing Keywords -->
+            <div>
+              <span class="text-xs font-semibold text-amber-400 block mb-1">Missing ATS Target Keywords</span>
+              <div id="res-missing-skills" class="flex flex-wrap gap-1.5"></div>
+            </div>
+
+            <!-- Tailored Summary -->
+            <div>
+              <span class="text-xs font-semibold text-slate-400 block mb-1">Tailored Executive Summary</span>
+              <p id="res-summary" class="text-xs text-slate-300 bg-slate-900/80 p-3 rounded-lg border border-slate-800 leading-relaxed"></p>
+            </div>
+
+            <!-- Suggested Cover Letter -->
+            <div>
+              <span class="text-xs font-semibold text-slate-400 block mb-1">AI-Curated Cover Letter</span>
+              <textarea id="res-cover-letter" rows="5" class="w-full bg-slate-900/80 border border-slate-800 rounded-lg p-3 text-xs text-slate-300 font-mono leading-relaxed" readonly></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: APPLICATION TRACKER -->
+    <section id="panel-tracker" class="hidden space-y-6">
+      <div class="bg-dark-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+        <div class="flex items-center justify-between mb-6 pb-4 border-b border-slate-800">
+          <div>
+            <h2 class="text-xl font-bold text-white">Application Log & History</h2>
+            <p class="text-xs text-slate-400">Applications automatically tracked as you use the Adonis Chrome Extension.</p>
+          </div>
+          <button onclick="loadApplications()" class="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white border border-slate-700 transition">
+            🔄 Refresh History
+          </button>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-xs text-slate-400 uppercase bg-slate-900/50 border-b border-slate-800">
+              <tr>
+                <th class="px-4 py-3">Company</th>
+                <th class="px-4 py-3">Role</th>
+                <th class="px-4 py-3">Date</th>
+                <th class="px-4 py-3">ATS Score</th>
+                <th class="px-4 py-3">Status</th>
+                <th class="px-4 py-3">Action</th>
+              </tr>
+            </thead>
+            <tbody id="applications-table-body" class="divide-y divide-slate-800">
+              <tr>
+                <td colspan="6" class="px-4 py-8 text-center text-slate-500 text-xs">No application records found. Autofill applications using the Chrome Extension to see them logged here.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Notification Toast -->
+  <div id="toast" class="fixed bottom-6 right-6 bg-slate-900 border border-emerald-500/50 text-white px-5 py-3 rounded-xl shadow-2xl transition transform translate-y-20 opacity-0 duration-300 z-50 text-sm flex items-center space-x-2">
+    <span class="text-emerald-400">✓</span>
+    <span id="toast-msg">Action completed</span>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

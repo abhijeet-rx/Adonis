@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Adonis - AI Job Copilot</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <style>
+    body {
+      width: 400px;
+      min-height: 520px;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="logo-group">
+        <div class="logo-icon">A</div>
+        <div>
+          <h1 class="logo-title">ADONIS</h1>
+          <span class="logo-subtitle">AI Job Copilot</span>
+        </div>
+      </div>
+      <div id="connection-status" class="status-badge status-offline">Connecting...</div>
+    </header>
+
+    <div class="profile-card">
+      <div class="avatar">AM</div>
+      <div class="profile-info">
+        <h3 id="candidate-name">Alex Mercer</h3>
+        <p id="candidate-headline">Senior Full Stack Engineer</p>
+      </div>
+      <button id="btn-open-sidepanel" class="icon-link" title="Open in Chrome Side Panel" style="background:none;border:none;cursor:pointer;font-size:16px;">⇲</button>
+    </div>
+
+    <div class="section-card">
+      <div class="section-header">
+        <span class="section-title">Active Job Page</span>
+        <span id="detected-platform" class="platform-tag">Detecting...</span>
+      </div>
+      <p id="page-title" class="job-meta">Detecting active tab...</p>
+      <button id="btn-analyze" class="btn btn-secondary">
+        <span class="btn-icon">🔍</span> Analyze & Curate for this Job
+      </button>
+    </div>
+
+    <div id="analysis-panel" class="section-card hidden">
+      <div class="ats-score-row">
+        <div>
+          <div class="ats-label">ATS MATCH SCORE</div>
+          <div id="match-score" class="score-number">88%</div>
+        </div>
+        <div class="score-gauge-container">
+          <div id="score-bar" class="score-bar" style="width: 88%;"></div>
+        </div>
+      </div>
+
+      <div class="curation-box">
+        <label class="curation-label">TAILORED HEADLINE</label>
+        <p id="tailored-headline" class="curation-text">Software Engineer</p>
+      </div>
+
+      <div class="curation-box">
+        <label class="curation-label">MATCHING SKILLS</label>
+        <div id="matching-tags" class="tag-cloud"></div>
+      </div>
+
+      <div class="action-buttons-grid">
+        <button id="btn-download-pdf" class="btn btn-outline">
+          📄 Download ATS PDF
+        </button>
+        <button id="btn-download-docx" class="btn btn-outline">
+          📝 Download ATS DOCX
+        </button>
+      </div>
+    </div>
+
+    <div id="qa-panel" class="section-card hidden">
+      <div class="section-header">
+        <span class="section-title">Screening Answers</span>
+      </div>
+      <div id="qa-list" class="qa-container"></div>
+    </div>
+
+    <div class="sticky-footer">
+      <button id="btn-autofill" class="btn btn-primary" disabled>
+        <span class="btn-icon">⚡</span> Autofill Application Form
+      </button>
+      <div class="safety-disclaimer">
+        <span>🛡️ <strong>Safety Policy:</strong> Autofill only. Adonis never automatically submits.</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
