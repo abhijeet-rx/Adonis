@@ -1,5 +1,12 @@
 import os
+import sys
 from pathlib import Path
+
+# Add backend directory to sys.path so 'app' imports work from any working directory
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
