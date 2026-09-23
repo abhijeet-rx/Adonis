@@ -69,4 +69,4 @@ def health_check():
 if __name__ == "__main__":
     import uvicorn
     from app.core.config import HOST, PORT
-    uvicorn.run("app.main:app", host=HOST, port=PORT, reload=True)
+    uvicorn.run("app.main:app", host=HOST, port=PORT, reload=True, app_dir=str(BACKEND_DIR))
