@@ -151,8 +151,29 @@ This document records the architectural and technical decisions made during the 
 
 ### ADR-014: Strict Deferral of Visual Canvas (React Flow) and Execution Engine
 * **Date**: 2026-09-26
-* **Status**: Accepted
+* **Status**: Accepted (React Flow visual canvas completed in Phase 3; execution engine deferred to Phase 4)
 * **Context**: The full system roadmap includes a visual React Flow canvas, node execution engine, Redis workers, and AI integration. Attempting to build these prematurely risks over-engineering and architectural debt.
 * **Decision**: Strictly limit Phase 2 to workflow CRUD data modeling and REST API contracts. Defer React Flow visual canvas to Phase 3, execution engine to Phase 4, execution history to Phase 5, and Redis task workers to Phase 7.
 * **Consequences**:
   - Positive: Maintains clean architectural boundaries, keeps the test surface focused and reliable, and enables incremental delivery.
+
+---
+
+## Phase 3: React Flow Visual Workflow Builder
+
+### ADR-015: React Flow Visual Canvas, Custom Nodes, and Graph Persistence
+* **Date**: 2026-09-26
+* **Status**: Accepted
+* **Context**: Users need an interactive, visual canvas to construct, view, move, connect, and configure workflow steps without manual JSON crafting. The visual graph state (node coordinates, connections, custom node parameters) must seamlessly persist into MongoDB using existing Phase 2 workflow APIs.
+* **Decision**:
+  - Integrate `@xyflow/react` (React Flow v12, React 19 compatible) as the visual workflow graph editor.
+  - Extend backend `WorkflowNode` with embedded `position` (`WorkflowNodePosition`: `x`, `y`) and `WorkflowEdge` with `sourceHandle` / `targetHandle` in a backwards-compatible manner.
+  - Create dedicated custom node components (`TriggerNode`, `HttpRequestNode`, `GenericNode`) styled to match Adonis dark aesthetics, with connection handles for DAG construction.
+  - Provide a `NodePalette` sidebar allowing click-to-add and HTML5 drag-and-drop onto the canvas.
+  - Provide a `NodeConfigPanel` sidebar for updating selected node metadata (label, method, url, description, trigger type) in memory without executing actions.
+  - Implement a clean bidirectional adapter (`workflowAdapter.ts`) separating React Flow canvas representation from backend MongoDB schema contracts.
+  - Persist workflow graphs using the existing `PUT /api/workflows/{id}` endpoint without creating extraneous APIs.
+  - Strictly maintain Phase 3 as a visual editor only: no execution engine, job queues, Redis, webhooks, or runner processes are introduced.
+* **Consequences**:
+  - Positive: Full visual editing experience with zoom, pan, minimap, background grid, and unsaved changes tracking. Clean separation between UI presentation state and persisted workflow documents.
+  - Trade-off: Requires maintaining coordinates and handles in the document model. Execution of graph nodes remains planned for Phase 4.

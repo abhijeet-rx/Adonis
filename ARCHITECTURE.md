@@ -16,13 +16,16 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-## 2. Current Architecture (Phase 2 Operational)
+## 2. Current Architecture (Phase 3 Operational)
 
-In Phase 2, the operational system topology extends the layered pipeline with workflow domain persistence:
+In Phase 3, the operational system topology provides an interactive visual workflow canvas integrated with the persistent workflow domain:
 
 ```text
-React (Vite + TypeScript + Tailwind)
-   ↓ HTTP / JSON (CORS-enabled)
+React (Vite + TypeScript + Tailwind + @xyflow/react)
+   ├── Visual Workflow Builder (Canvas, MiniMap, Controls, Background)
+   ├── Node Palette (Trigger, HTTP Request, Generic) & Node Config Drawer
+   └── Bidirectional Graph Adapter (workflowAdapter.ts)
+   ↓ HTTP / JSON (Bearer JWT, CORS-enabled)
 Spring Boot REST API (Java 21, Spring Boot 3.3.4)
    ↓
 Spring Security + JWT (Stateless filter, BCrypt password encoder)
@@ -31,7 +34,7 @@ Service Layer (AuthService, UserService, WorkflowService)
    ↓
 MongoDB (Spring Data MongoDB, 7.0 container)
    ├── Collection: users (unique index on lowercase email)
-   └── Collection: workflows (indexed by userId for ownership isolation)
+   └── Collection: workflows (nodes with positions & edges with handles, indexed by userId)
 ```
 
 ### Component Status (Implemented vs. Deferred)
@@ -41,11 +44,11 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Completed) |
 | **Spring Boot 3.3 REST Baseline** | **Operational** (`GET /api/health`) | Phase 0 (Completed) |
 | **React + TypeScript UI Shell** | **Operational** (Landing & Diagnostics) | Phase 0 (Completed) |
-| **MongoDB Persistence** | **Operational** (Documents `User`, `Workflow`) | Phase 1 & 2 (Completed) |
+| **MongoDB Persistence** | **Operational** (Documents `User`, `Workflow`) | Phase 1, 2 & 3 (Completed) |
 | **Authentication & User Management** | **Operational** (Stateless JWT + BCrypt) | Phase 1 (Completed) |
 | **Protected User Profile API** | **Operational** (`GET /api/users/me`) | Phase 1 (Completed) |
 | **Workflow CRUD APIs** | **Operational** (`POST/GET/PUT/DELETE /api/workflows`) | Phase 2 (Completed) |
-| **React Flow Visual Canvas** | *NOT Implemented* | Phase 3 (React Flow Builder) |
+| **React Flow Visual Canvas** | **Operational** (`@xyflow/react` v12 visual builder) | Phase 3 (Completed) |
 | **Workflow Execution Engine** | *NOT Implemented* | Phase 4 (Execution Engine) |
 | **Execution History & Logs** | *NOT Implemented* | Phase 5 (Execution History + Logs) |
 | **Retries & Failure Handling** | *NOT Implemented* | Phase 6 (Retries + Failure Handling) |
@@ -56,7 +59,7 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |
 | **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |
 
-> **Explicit Boundary**: Workflow execution, DAG compilation, scheduling, Redis worker queues, AI integrations, and the visual React Flow canvas are **NOT** part of Phase 2. Phase 2 strictly encompasses workflow definition persistence and ownership-isolated CRUD operations.
+> **Explicit Boundary**: Workflow execution, DAG compilation, scheduling, Redis worker queues, AI integrations, and background runner processes are **NOT** part of Phase 3. Phase 3 strictly encompasses the visual graph canvas, node dragging/configuration, and visual state persistence.
 
 ---
 
@@ -87,7 +90,7 @@ Each workflow document in MongoDB (`workflows` collection) represents a persiste
 ```mermaid
 graph TD
     subgraph Client["Client Tier (Operational)"]
-        UI["React 19 + TypeScript SPA<br/>(Auth UI & Workflow CRUD)"]
+        UI["React 19 + TypeScript SPA<br/>(Auth, Workflow CRUD & React Flow Canvas)"]
     end
 
     subgraph Gateway["API & Ingress Tier (Operational)"]
@@ -106,7 +109,6 @@ graph TD
     end
 
     subgraph Deferred["Deferred Subsystems (NOT Implemented)"]
-        CANVAS["React Flow Canvas (Planned Phase 3)"]
         ENGINE["Workflow Execution Engine (Planned Phase 4)"]
         REDIS[("Redis Task Queue (Planned Phase 7)")]
         AI["AI Provider Integrations (Planned Phase 9)"]

@@ -23,6 +23,7 @@ import {
   FolderGit2
 } from 'lucide-react';
 import { workflowApi, type Workflow, type WorkflowStatus } from './services/workflowService';
+import { WorkflowBuilder } from './components/workflow/WorkflowBuilder';
 
 interface HealthData {
   status: string;
@@ -69,7 +70,7 @@ export const App: React.FC = () => {
   const [protectedMessage, setProtectedMessage] = useState<string | null>(null);
   const [protectedError, setProtectedError] = useState<string | null>(null);
 
-  // Workflow State (Phase 2 CRUD)
+  // Workflow State (Phase 2 CRUD & Phase 3 Visual Builder)
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [workflowsLoading, setWorkflowsLoading] = useState(false);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
@@ -77,6 +78,35 @@ export const App: React.FC = () => {
   const [wfDesc, setWfDesc] = useState('');
   const [wfStatus, setWfStatus] = useState<WorkflowStatus>('DRAFT');
   const [creatingWf, setCreatingWf] = useState(false);
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(() => {
+    const hash = window.location.hash;
+    if (hash.startsWith('#/workflow/')) {
+      return hash.replace('#/workflow/', '') || null;
+    }
+    return null;
+  });
+
+  const openWorkflowBuilder = (id: string) => {
+    setActiveWorkflowId(id);
+  };
+
+  const closeWorkflowBuilder = () => {
+    setActiveWorkflowId(null);
+    const storedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (storedToken) {
+      void loadWorkflows(storedToken);
+    }
+  };
+
+  useEffect(() => {
+    if (activeWorkflowId) {
+      if (window.location.hash !== `#/workflow/${activeWorkflowId}`) {
+        window.location.hash = `#/workflow/${activeWorkflowId}`;
+      }
+    } else if (window.location.hash.startsWith('#/workflow/')) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }, [activeWorkflowId]);
 
   const fetchHealth = async () => {
     setHealthLoading(true);
@@ -102,6 +132,7 @@ export const App: React.FC = () => {
     setToken(null);
     setCurrentUser(null);
     setWorkflows([]);
+    setActiveWorkflowId(null);
     setWorkflowError(null);
     setProtectedMessage(null);
     setProtectedError(null);
@@ -147,16 +178,50 @@ export const App: React.FC = () => {
     setCreatingWf(true);
     setWorkflowError(null);
     try {
-      await workflowApi.createWorkflow({
+      const now = Date.now();
+      const triggerId = `trigger-${now}`;
+      const httpId = `http-${now}`;
+      const created = await workflowApi.createWorkflow({
         name: wfName.trim(),
         description: wfDesc.trim() || undefined,
         status: wfStatus,
-        nodes: [],
-        edges: []
+        nodes: [
+          {
+            id: triggerId,
+            type: 'trigger',
+            position: { x: 120, y: 160 },
+            data: {
+              label: 'Manual Trigger',
+              triggerType: 'Manual',
+              description: 'Starts workflow graph execution'
+            }
+          },
+          {
+            id: httpId,
+            type: 'httpRequest',
+            position: { x: 440, y: 160 },
+            data: {
+              label: 'HTTP Request',
+              method: 'GET',
+              url: 'https://api.example.com',
+              description: 'Fetch external resource'
+            }
+          }
+        ],
+        edges: [
+          {
+            id: `edge-${now}`,
+            source: triggerId,
+            target: httpId,
+            sourceHandle: 'output',
+            targetHandle: 'input'
+          }
+        ]
       }, token);
       setWfName('');
       setWfDesc('');
       await loadWorkflows(token);
+      openWorkflowBuilder(created.id);
     } catch (err: unknown) {
       setWorkflowError(err instanceof Error ? err.message : 'Failed to create workflow');
     } finally {
@@ -168,6 +233,9 @@ export const App: React.FC = () => {
     if (!token) return;
     try {
       await workflowApi.deleteWorkflow(id, token);
+      if (activeWorkflowId === id) {
+        closeWorkflowBuilder();
+      }
       await loadWorkflows(token);
     } catch (err: unknown) {
       setWorkflowError(err instanceof Error ? err.message : 'Failed to delete workflow');
@@ -181,6 +249,21 @@ export const App: React.FC = () => {
       void loadUserProfile(storedToken);
       void loadWorkflows(storedToken);
     }
+
+    const handleHashChange = () => {
+      const hash = window.location.hash;
+      if (hash.startsWith('#/workflow/')) {
+        const id = hash.replace('#/workflow/', '');
+        if (id) {
+          setActiveWorkflowId(id);
+        }
+      } else if (!hash) {
+        setActiveWorkflowId(null);
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -298,7 +381,7 @@ export const App: React.FC = () => {
                 Adonis
               </span>
               <span className="ml-2 text-xs font-mono font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                Phase 2: Workflow CRUD
+                {activeWorkflowId ? 'Phase 3: Visual Builder' : 'Phase 3: Visual Canvas'}
               </span>
             </div>
           </div>
@@ -336,8 +419,17 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 max-w-7xl mx-auto px-6 py-12 w-full space-y-10">
+      {/* Main Content: Workflow Builder or Dashboard */}
+      {activeWorkflowId && token ? (
+        <WorkflowBuilder
+          workflowId={activeWorkflowId}
+          token={token}
+          onBack={closeWorkflowBuilder}
+          onWorkflowSaved={() => void loadWorkflows(token)}
+        />
+      ) : (
+        <>
+          <main className="flex-1 max-w-7xl mx-auto px-6 py-12 w-full space-y-10">
         {/* Hero Section */}
         <section className="text-center space-y-4 max-w-3xl mx-auto">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700 text-xs text-slate-300">
@@ -634,12 +726,24 @@ export const App: React.FC = () => {
                     <div className="text-center py-4 text-xs text-slate-500">No workflows created yet. Create your first workflow above.</div>
                   ) : (
                     workflows.map((wf) => (
-                      <div key={wf.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-950/60 border border-slate-800/60 hover:border-slate-700/80 transition">
-                        <div className="space-y-0.5">
+                      <div
+                        key={wf.id}
+                        className="flex items-center justify-between p-3.5 rounded-lg bg-slate-950/60 border border-slate-800/60 hover:border-emerald-500/40 transition group"
+                      >
+                        <div
+                          onClick={() => openWorkflowBuilder(wf.id)}
+                          className="space-y-1 cursor-pointer flex-1 mr-4"
+                          title="Open in Visual Builder"
+                        >
                           <div className="flex items-center gap-2">
-                            <span className="text-xs font-semibold text-white">{wf.name}</span>
+                            <span className="text-xs font-semibold text-white group-hover:text-emerald-400 transition-colors">
+                              {wf.name}
+                            </span>
                             <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${wf.status === 'ACTIVE' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
                               {wf.status}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              ({wf.nodes?.length || 0} nodes, {wf.edges?.length || 0} edges)
                             </span>
                           </div>
                           {wf.description && <p className="text-[11px] text-slate-400">{wf.description}</p>}
@@ -647,13 +751,23 @@ export const App: React.FC = () => {
                             ID: {wf.id} &bull; Created: {new Date(wf.createdAt).toLocaleDateString()}
                           </div>
                         </div>
-                        <button
-                          onClick={() => handleDeleteWorkflow(wf.id)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
-                          title="Delete workflow"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => openWorkflowBuilder(wf.id)}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-medium transition"
+                            title="Open in visual workflow builder"
+                          >
+                            <WorkflowIcon className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Open Builder</span>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteWorkflow(wf.id)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                            title="Delete workflow"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     ))
                   )}
@@ -728,7 +842,7 @@ export const App: React.FC = () => {
               <Layers className="w-5 h-5 text-emerald-400" />
               Architecture &amp; Incremental Roadmap
             </h2>
-            <span className="text-xs text-slate-400">Phase 2 complete</span>
+            <span className="text-xs text-slate-400">Phase 3 complete</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -765,14 +879,14 @@ export const App: React.FC = () => {
               </p>
             </div>
 
-            <div className="p-5 rounded-xl bg-slate-900/40 border border-slate-800/80 opacity-80">
+            <div className="p-5 rounded-xl bg-slate-900/50 border border-slate-800/80">
               <div className="flex items-center justify-between mb-3">
-                <Sparkles className="w-6 h-6 text-slate-400" />
-                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2 py-0.5 rounded bg-slate-800">Planned</span>
+                <Sparkles className="w-6 h-6 text-emerald-400" />
+                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20">Done</span>
               </div>
-              <h3 className="font-semibold text-slate-300 text-sm mb-1">Phase 3: React Flow Canvas</h3>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Visual node graph editor, draggable connectors, node configuration modals, and edge validation.
+              <h3 className="font-semibold text-white text-sm mb-1">Phase 3: Visual Canvas</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Visual node graph editor, draggable connectors, node configuration drawer, and MongoDB graph persistence.
               </p>
             </div>
           </div>
@@ -794,6 +908,8 @@ export const App: React.FC = () => {
           </div>
         </div>
       </footer>
+        </>
+      )}
     </div>
   );
 };

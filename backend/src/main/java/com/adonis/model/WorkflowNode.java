@@ -9,14 +9,20 @@ public class WorkflowNode {
     private String id;
     private String type;
     private Map<String, Object> data = new HashMap<>();
+    private WorkflowNodePosition position;
 
     public WorkflowNode() {
     }
 
     public WorkflowNode(String id, String type, Map<String, Object> data) {
+        this(id, type, data, new WorkflowNodePosition(0.0, 0.0));
+    }
+
+    public WorkflowNode(String id, String type, Map<String, Object> data, WorkflowNodePosition position) {
         this.id = id;
         this.type = type;
         this.data = data != null ? data : new HashMap<>();
+        this.position = position != null ? position : new WorkflowNodePosition(0.0, 0.0);
     }
 
     public String getId() {
@@ -43,17 +49,26 @@ public class WorkflowNode {
         this.data = data != null ? data : new HashMap<>();
     }
 
+    public WorkflowNodePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(WorkflowNodePosition position) {
+        this.position = position != null ? position : new WorkflowNodePosition(0.0, 0.0);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (!(o instanceof WorkflowNode that)) return false;
         return Objects.equals(id, that.id) &&
                 Objects.equals(type, that.type) &&
-                Objects.equals(data, that.data);
+                Objects.equals(data, that.data) &&
+                Objects.equals(position, that.position);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(id, type, data);
+        return Objects.hash(id, type, data, position);
     }
 }

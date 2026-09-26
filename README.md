@@ -8,9 +8,9 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 2 — Workflow CRUD** *(Completed)*
+**Phase 3 — React Flow Visual Workflow Builder** *(Completed)*
 
-This phase introduces the workflow domain, MongoDB persistence for workflow definitions, RESTful CRUD endpoints, strict user ownership isolation derived from JWT identity, request validation, and comprehensive automated test suites.
+This phase introduces an interactive React Flow visual workflow canvas (`@xyflow/react`), custom node components (`TriggerNode`, `HttpRequestNode`, `GenericNode`), an interactive node palette with drag-and-drop and click-to-add support, an in-memory node configuration drawer, unsaved changes dirty-state tracking, and bidirectional graph adapters persisting visual DAG definitions directly into MongoDB via the existing Phase 2 workflow APIs.
 
 ---
 
@@ -19,7 +19,7 @@ This phase introduces the workflow domain, MongoDB persistence for workflow defi
 | Layer | Technology |
 |---|---|
 | **Backend** | Java 21 LTS, Spring Boot 3.3.4, Maven, Spring Web, Spring Data MongoDB, Spring Security 6, JJWT 0.12, BCrypt |
-| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, Lucide Icons |
+| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, @xyflow/react, Lucide Icons |
 | **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017) |
 | **Containerization** | Docker, Docker Compose (Multi-stage builds) |
 | **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc, pure-Java in-memory MongoServer |
@@ -153,19 +153,19 @@ docker compose up --build
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0, Phase 1 & Phase 2 — Operational)**:
+- **Current (Phase 0, Phase 1, Phase 2 & Phase 3 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users` and `workflows` collections)
   - Spring Security 6 stateless authentication with BCrypt password hashing
   - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`)
   - Workflow CRUD REST API (`POST`, `GET`, `GET {id}`, `PUT {id}`, `DELETE {id}`) with ownership-level query isolation
-  - React 19 + TypeScript + Vite + Tailwind CSS frontend with authentication and workflow CRUD management
+  - React Flow visual workflow builder (`@xyflow/react`) with custom nodes (Trigger, HTTP Request, Generic), handles, zoom/pan/minimap, node palette, configuration drawer, and dirty state management
+  - React 19 + TypeScript + Vite + Tailwind CSS frontend with authentication, workflow CRUD management, and visual workflow canvas
   - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, and `mongodb`
   - Automated GitHub Actions CI pipeline (backend test & frontend build)
 
-- **Planned Functionality (Phases 3–12)**:
-  - React Flow visual workflow builder (Planned for Phase 3)
+- **Planned Functionality (Phases 4–12)**:
   - Workflow execution engine (Planned for Phase 4)
   - Execution history & logs (Planned for Phase 5)
   - Retries & failure handling (Planned for Phase 6)
@@ -183,7 +183,7 @@ docker compose up --build
 - [x] **Phase 0 — Project Initialization**
 - [x] **Phase 1 — Authentication + MongoDB + User Management**
 - [x] **Phase 2 — Workflow CRUD**
-- [ ] **Phase 3 — React Flow Visual Workflow Builder**
+- [x] **Phase 3 — React Flow Visual Workflow Builder**
 - [ ] **Phase 4 — Workflow Execution Engine**
 - [ ] **Phase 5 — Execution History + Logs**
 - [ ] **Phase 6 — Retries + Failure Handling**

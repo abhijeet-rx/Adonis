@@ -7,6 +7,7 @@ import com.adonis.exception.WorkflowNotFoundException;
 import com.adonis.model.Workflow;
 import com.adonis.model.WorkflowEdge;
 import com.adonis.model.WorkflowNode;
+import com.adonis.model.WorkflowNodePosition;
 import com.adonis.model.WorkflowStatus;
 import com.adonis.repository.WorkflowRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -175,6 +176,42 @@ class WorkflowServiceTest {
         assertTrue(response.updatedAt().isAfter(originalUpdatedAt));
 
         verify(workflowRepository).save(existing);
+    }
+
+    @Test
+    void updateWorkflow_ShouldUpdateNodesWithPositionAndEdgesWithHandles() {
+        Workflow existing = new Workflow("wf-visual", "user-100", "Old Name", "Old Desc",
+                WorkflowStatus.DRAFT, List.of(), List.of(), Instant.now(), Instant.now());
+
+        when(workflowRepository.findByIdAndUserId("wf-visual", "user-100")).thenReturn(Optional.of(existing));
+        when(workflowRepository.save(any(Workflow.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        WorkflowNode node = new WorkflowNode(
+                "node-flow-1",
+                "httpRequest",
+                Map.of("label", "Call Service"),
+                new WorkflowNodePosition(300.0, 450.0)
+        );
+        WorkflowEdge edge = new WorkflowEdge("edge-flow-1", "node-flow-1", "node-flow-2", "output", "input");
+
+        UpdateWorkflowRequest updateRequest = new UpdateWorkflowRequest(
+                "Visual Canvas Workflow",
+                "Contains positions and handles",
+                WorkflowStatus.ACTIVE,
+                List.of(node),
+                List.of(edge)
+        );
+
+        WorkflowResponse response = workflowService.updateWorkflow("wf-visual", "user-100", updateRequest);
+
+        assertEquals("Visual Canvas Workflow", response.name());
+        assertEquals(1, response.nodes().size());
+        assertNotNull(response.nodes().get(0).getPosition());
+        assertEquals(300.0, response.nodes().get(0).getPosition().getX());
+        assertEquals(450.0, response.nodes().get(0).getPosition().getY());
+        assertEquals(1, response.edges().size());
+        assertEquals("output", response.edges().get(0).getSourceHandle());
+        assertEquals("input", response.edges().get(0).getTargetHandle());
     }
 
     @Test

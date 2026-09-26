@@ -3,6 +3,7 @@ package com.adonis.repository;
 import com.adonis.model.Workflow;
 import com.adonis.model.WorkflowEdge;
 import com.adonis.model.WorkflowNode;
+import com.adonis.model.WorkflowNodePosition;
 import com.adonis.model.WorkflowStatus;
 import de.bwaldvogel.mongo.MongoServer;
 import de.bwaldvogel.mongo.backend.memory.MemoryBackend;
@@ -97,6 +98,38 @@ class WorkflowRepositoryTest {
         assertEquals("edge-1", found.getEdges().get(0).getId());
         assertEquals("node-1", found.getEdges().get(0).getSource());
         assertEquals("node-2", found.getEdges().get(0).getTarget());
+    }
+
+    @Test
+    void shouldPersistAndRetrieveNodesWithPositionAndEdgesWithHandles() {
+        WorkflowNode node = new WorkflowNode(
+                "node-visual-1",
+                "httpRequest",
+                Map.of("label", "Fetch Data", "url", "https://api.example.com", "method", "GET"),
+                new WorkflowNodePosition(250.5, 350.0)
+        );
+        WorkflowEdge edge = new WorkflowEdge("edge-visual-1", "node-visual-1", "node-visual-2", "source-handle-1", "target-handle-1");
+
+        Workflow workflow = Workflow.create("user-canvas", "Visual Pipeline", "Visual description",
+                WorkflowStatus.DRAFT, List.of(node), List.of(edge));
+        Workflow saved = workflowRepository.save(workflow);
+
+        Optional<Workflow> retrieved = workflowRepository.findById(saved.getId());
+        assertTrue(retrieved.isPresent());
+        Workflow found = retrieved.get();
+
+        assertEquals(1, found.getNodes().size());
+        WorkflowNode foundNode = found.getNodes().get(0);
+        assertEquals("node-visual-1", foundNode.getId());
+        assertNotNull(foundNode.getPosition());
+        assertEquals(250.5, foundNode.getPosition().getX());
+        assertEquals(350.0, foundNode.getPosition().getY());
+
+        assertEquals(1, found.getEdges().size());
+        WorkflowEdge foundEdge = found.getEdges().get(0);
+        assertEquals("edge-visual-1", foundEdge.getId());
+        assertEquals("source-handle-1", foundEdge.getSourceHandle());
+        assertEquals("target-handle-1", foundEdge.getTargetHandle());
     }
 
     @Test
