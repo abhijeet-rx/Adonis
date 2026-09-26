@@ -8,8 +8,6 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-## Current Development Phase
-
 **Phase 1 — Authentication + MongoDB + User Management** *(Completed)*
 
 This phase adds persistent identity management with MongoDB, BCrypt password hashing, stateless JWT authentication, protected endpoints, and a full frontend authentication workflow.

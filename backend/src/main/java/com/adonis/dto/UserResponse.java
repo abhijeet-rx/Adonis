@@ -8,14 +8,16 @@ public record UserResponse(
         String id,
         String name,
         String email,
-        Instant createdAt
+        Instant createdAt,
+        Instant updatedAt
 ) {
     public static UserResponse fromUser(User user) {
         return new UserResponse(
                 user.getId(),
                 user.getName(),
                 user.getEmail(),
-                user.getCreatedAt()
+                user.getCreatedAt(),
+                user.getUpdatedAt()
         );
     }
 }

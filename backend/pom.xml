@@ -71,6 +71,13 @@
             <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- In-memory MongoDB testing for Phase 1 (Testcontainers deferred to Phase 10) -->
+        <dependency>
+            <groupId>de.bwaldvogel</groupId>
+            <artifactId>mongo-java-server</artifactId>
+            <version>1.44.0</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

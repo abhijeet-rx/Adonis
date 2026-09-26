@@ -32,6 +32,7 @@ interface UserProfile {
   name: string;
   email: string;
   createdAt: string;
+  updatedAt: string;
 }
 
 interface AuthSuccessResponse {
@@ -202,6 +203,10 @@ export const App: React.FC = () => {
       });
 
       if (!res.ok) {
+        if (res.status === 401) {
+          handleLogout();
+          throw new Error('HTTP 401: Token expired or invalid. You have been logged out.');
+        }
         throw new Error(`HTTP ${res.status}: Access Denied / Invalid Token`);
       }
 
@@ -430,6 +435,9 @@ export const App: React.FC = () => {
                   <span className="text-xs text-slate-400 block mb-1">User Identity</span>
                   <div className="text-sm font-semibold text-white">{currentUser?.name || 'Loading...'}</div>
                   <div className="text-xs text-slate-400 font-mono">{currentUser?.email}</div>
+                  {currentUser?.updatedAt && (
+                    <div className="text-[10px] text-slate-500 mt-1 font-mono">Updated: {new Date(currentUser.updatedAt).toLocaleString()}</div>
+                  )}
                 </div>
 
                 <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800">
@@ -449,7 +457,7 @@ export const App: React.FC = () => {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs font-semibold text-white">Active JWT Access Token</span>
+                    <span className="text-xs font-semibold text-white">Active Authentication Session</span>
                   </div>
                   <button
                     onClick={testProtectedEndpoint}
@@ -461,8 +469,12 @@ export const App: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-400 break-all select-all">
-                  Bearer {token}
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span className="font-mono text-[11px] text-slate-300">JWT Token Active</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 font-mono">Authorization: Bearer ••••••••••••</span>
                 </div>
 
                 {protectedMessage && (

@@ -16,119 +16,121 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-## 2. High-Level Component Topology
+## 2. Current Architecture (Phase 1 Operational)
 
-```mermaid
-graph TD
-    subgraph Client["Client Tier"]
-        UI["React 19 + TypeScript SPA<br/>(Vite, Tailwind, React Flow - Planned Phase 3)"]
-    end
+In Phase 1, the operational system topology follows a clean layered pipeline:
 
-    subgraph Gateway["API & Ingress Tier"]
-        API["Spring Boot 3.3 REST API<br/>(/api/health active, others Phase 1+)"]
-        AUTH["Spring Security & JWT<br/>(Planned Phase 1)"]
-    end
-
-    subgraph Engine["Execution Tier (Planned Phase 4)"]
-        DAG["DAG Graph Compiler & Validator<br/>(Planned Phase 4)"]
-        SYNC["Synchronous Step Engine<br/>(Planned Phase 4)"]
-        QUEUE["Redis Task Queue / PubSub<br/>(Planned Phase 7)"]
-        WORKER["Async Workflow Worker Pool<br/>(Planned Phase 7)"]
-    end
-
-    subgraph Storage["Data & Cache Tier (Planned)"]
-        MONGO[("MongoDB 7.0<br/>(Planned Phase 1)")]
-        REDIS[("Redis 7.2<br/>(Planned Phase 7)")]
-    end
-
-    subgraph Integrations["External Services (Planned Phase 8 & 9)"]
-        AI["AI Providers<br/>(Gemini / OpenAI - Planned Phase 9)"]
-        HOOKS["External Webhooks & Schedulers<br/>(Planned Phase 8)"]
-    end
-
-    UI -->|REST / JSON| API
-    API --> AUTH
-    API --> DAG
-    DAG --> SYNC
-    DAG --> QUEUE
-    QUEUE --> WORKER
-    SYNC --> MONGO
-    WORKER --> MONGO
-    WORKER --> REDIS
-    WORKER --> AI
-    WORKER --> HOOKS
+```text
+React (Vite + TypeScript + Tailwind)
+   ↓ HTTP / JSON (CORS-enabled)
+Spring Boot REST API (Java 21, Spring Boot 3.3.4)
+   ↓
+Spring Security + JWT (Stateless filter, BCrypt password encoder)
+   ↓
+User Management (AuthService, UserService)
+   ↓
+MongoDB (Spring Data MongoDB, 7.0 container, unique index on lowercase email)
 ```
 
-### Component Status (Current vs. Planned)
+### Component Status (Implemented vs. Deferred)
 
-The architecture diagram above outlines the full platform vision. Current development status (**Phase 1**):
-
-| Subsystem / Technology | Status | Implementation Milestone |
+| Subsystem / Component | Current Status | Milestone |
 |---|---|---|
 | **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Completed) |
-| **Spring Boot 3.3 REST Baseline** | **Operational** (`/api/health`) | Phase 0 (Completed) |
-| **React + TypeScript UI Shell** | **Operational** (Auth & Diagnostic) | Phase 0 & 1 (Completed) |
-| **MongoDB Persistence** | **Operational** (`users` collection) | Phase 1 (Completed) |
-| **Authentication & User Management** | **Operational** (JWT + BCrypt) | Phase 1 (Completed) |
-| **Workflow CRUD APIs** | *Planned (Not Implemented)* | Phase 2 (Workflow CRUD) |
-| **React Flow Visual Canvas** | *Planned (Not Implemented)* | Phase 3 (React Flow Visual Workflow Builder) |
-| **Workflow Execution Engine** | *Planned (Not Implemented)* | Phase 4 (Workflow Execution Engine) |
-| **Execution History & Logs** | *Planned (Not Implemented)* | Phase 5 (Execution History + Logs) |
-| **Retries & Failure Handling** | *Planned (Not Implemented)* | Phase 6 (Retries + Failure Handling) |
-| **Redis Asynchronous Workers** | *Planned (Not Implemented)* | Phase 7 (Redis Asynchronous Workers) |
-| **Scheduling & Webhooks** | *Planned (Not Implemented)* | Phase 8 (Scheduling + Webhooks) |
-| **AI Intelligent Nodes** | *Planned (Not Implemented)* | Phase 9 (AI Nodes) |
+| **Spring Boot 3.3 REST Baseline** | **Operational** (`GET /api/health`) | Phase 0 (Completed) |
+| **React + TypeScript UI Shell** | **Operational** (Landing & Diagnostics) | Phase 0 (Completed) |
+| **MongoDB Persistence** | **Operational** (Document `User`, collection `users`) | Phase 1 (Completed) |
+| **Authentication & User Management** | **Operational** (Stateless JWT + BCrypt) | Phase 1 (Completed) |
+| **Protected User Profile API** | **Operational** (`GET /api/users/me`) | Phase 1 (Completed) |
+| **Workflow CRUD APIs** | *NOT Implemented* | Phase 2 (Workflow CRUD) |
+| **React Flow Visual Canvas** | *NOT Implemented* | Phase 3 (React Flow Builder) |
+| **Workflow Execution Engine** | *NOT Implemented* | Phase 4 (Execution Engine) |
+| **Execution History & Logs** | *NOT Implemented* | Phase 5 (Execution History + Logs) |
+| **Retries & Failure Handling** | *NOT Implemented* | Phase 6 (Retries + Failure Handling) |
+| **Redis Asynchronous Workers** | *NOT Implemented* | Phase 7 (Redis Asynchronous Workers) |
+| **Scheduling & Webhooks** | *NOT Implemented* | Phase 8 (Scheduling + Webhooks) |
+| **AI Intelligent Nodes** | *NOT Implemented* | Phase 9 (AI Nodes) |
+| **Automated Testing & Testcontainers** | *NOT Implemented* | Phase 10 (Testcontainers deferred to Phase 10) |
+| **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |
+| **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |
 
 ---
 
-## 3. Current Phase 1 Architecture
+## 3. High-Level Topology (Current Operational vs Future Planned)
 
-In Phase 1, client-server communication incorporates stateless JWT authentication and MongoDB persistence:
+```mermaid
+graph TD
+    subgraph Client["Client Tier (Operational)"]
+        UI["React 19 + TypeScript SPA<br/>(Vite, Tailwind, Auth UI)"]
+    end
+
+    subgraph Gateway["API & Ingress Tier (Operational)"]
+        API["Spring Boot 3.3 REST API<br/>(/api/health, /api/auth/*, /api/users/me)"]
+        AUTH["Spring Security & JWT Filter<br/>(Stateless Bearer token validation)"]
+    end
+
+    subgraph ServiceLayer["Service & Business Logic (Operational)"]
+        AUTH_SVC["AuthService (Register, Login, BCrypt)"]
+        USER_SVC["UserService (Profile retrieval)"]
+    end
+
+    subgraph Storage["Data Tier (Operational)"]
+        MONGO[("MongoDB 7.0<br/>(Collection: users, unique email index)")]
+    end
+
+    subgraph Deferred["Deferred Subsystems (NOT Implemented)"]
+        ENGINE["Workflow Execution Engine (Planned Phase 4)"]
+        REDIS[("Redis Task Queue (Planned Phase 7)")]
+        AI["AI Provider Integrations (Planned Phase 9)"]
+    end
+
+    UI -->|HTTP / JSON| API
+    API --> AUTH
+    AUTH --> AUTH_SVC
+    AUTH --> USER_SVC
+    AUTH_SVC --> MONGO
+    USER_SVC --> MONGO
+```
+
+---
+
+## 4. Current Phase 1 Request Flows
 
 ```
 [Browser / React App] 
       │
-      ├── POST /api/auth/register ──> Hashes password (BCrypt), saves User to MongoDB, returns JWT
-      ├── POST /api/auth/login    ──> Verifies password with BCrypt, returns JWT
-      ├── GET  /api/users/me      ──> Authenticated via Bearer JWT, returns user profile
-      └── GET  /api/health        ──> Public health diagnostic
+      ├── POST /api/auth/register ──> Validates input, hashes password (BCrypt), persists User to MongoDB, returns JWT
+      ├── POST /api/auth/login    ──> Verifies credentials with BCrypt, returns JWT (generic 401 on failure)
+      ├── GET  /api/users/me      ──> Authenticated via Bearer JWT, extracts UserPrincipal, returns UserResponse
+      └── GET  /api/health        ──> Public health diagnostic (Phase 0)
 ```
-
-### Component Breakdown
-
-| Component | Responsibility in Phase 0 | Technology |
-|---|---|---|
-| `frontend` | Visual interface, landing shell, and backend health diagnostic | React, TypeScript, Vite, Tailwind CSS |
-| `backend` | Core REST entry point, health endpoint, Spring Boot web runtime | Java 21, Spring Boot 3.3.4, Maven |
-| `docker` | Multi-stage container definitions for isolated builds | Docker, Docker Compose |
-| `.github/workflows` | Continuous integration pipeline verifying build and test integrity | GitHub Actions |
 
 ---
 
-## 4. Package Architecture (Backend)
+## 5. Package Architecture (Backend)
 
 The backend follows a layered architecture with strict dependency flow:
 
 ```
 backend/src/main/java/com/adonis/
 ├── AdonisApplication.java       # Application Bootstrap
-├── config/                      # Web MVC, CORS, and cross-cutting beans
-├── controller/                  # REST Controllers (exposing HTTP endpoints)
-├── dto/                         # Strongly-typed Data Transfer Records
-├── exception/                   # Global exception handling & API error formats (Phase 1+)
-├── model/                       # Domain entities & MongoDB documents (Phase 1+)
-├── repository/                  # Spring Data MongoDB repositories (Phase 1+)
-├── security/                    # Spring Security configuration, JWT filters (Phase 1+)
-└── service/                     # Workflow business logic & orchestration (Phase 4+)
+├── config/                      # Web MVC, CORS configuration
+├── controller/                  # REST Controllers (HealthController, AuthController, UserController)
+├── dto/                         # Strongly-typed Java 21 Records (RegisterRequest, LoginRequest, UserResponse, AuthResponse, ErrorResponse)
+├── exception/                   # Global exception handling (GlobalExceptionHandler, EmailAlreadyExistsException, UserNotFoundException)
+├── model/                       # MongoDB Document Models (User)
+├── repository/                  # Spring Data MongoDB Repositories (UserRepository)
+├── security/                    # SecurityConfig, JwtService, JwtAuthenticationFilter, UserPrincipal
+└── service/                     # Business Logic (AuthService, UserService)
 ```
 
 ---
 
-## 5. Port Allocations & Networking
+## 6. Port Allocations & Networking
 
-| Service | Internal Port | Host / Exposed Port | Protocol | Purpose |
-|---|---|---|---|---|
-| `frontend` | 80 (prod) / 5173 (dev) | 5173 | HTTP | User Interface |
-| `backend` | 8080 | 8080 | HTTP | REST API & Engine |
-| `mongodb` | 27017 | 27017 | TCP | Workflow & User persistence *(Planned Phase 1)* |
-| `redis` | 6379 | 6379 | TCP | Async job queue *(Planned Phase 7)* |
+| Service | Internal Port | Host / Exposed Port | Protocol | Status | Purpose |
+|---|---|---|---|---|---|
+| `frontend` | 80 (prod) / 5173 (dev) | 5173 | HTTP | **Operational** | User Interface & Auth Dashboard |
+| `backend` | 8080 | 8080 | HTTP | **Operational** | REST API & Security Engine |
+| `mongodb` | 27017 | 27017 | TCP | **Operational** | MongoDB 7.0 User Persistence |
+| `redis` | 6379 | 6379 | TCP | *Deferred (Phase 7)* | Async job queue & worker tasks |

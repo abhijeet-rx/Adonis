@@ -18,7 +18,7 @@ public class JwtService {
     private final long expirationMs;
 
     public JwtService(
-            @Value("${adonis.jwt.secret:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}") String secret,
+            @Value("${adonis.jwt.secret}") String secret,
             @Value("${adonis.jwt.expiration-ms:86400000}") long expirationMs
     ) {
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);

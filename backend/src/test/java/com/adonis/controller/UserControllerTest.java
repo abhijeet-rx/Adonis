@@ -41,9 +41,41 @@ class UserControllerTest {
     }
 
     @Test
+    void getCurrentUserShouldFailWithMalformedToken() throws Exception {
+        mockMvc.perform(get("/api/users/me")
+                        .header("Authorization", "Bearer invalid.malformed.token"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void getCurrentUserShouldFailWithForgedSignatureToken() throws Exception {
+        String forgedSecret = "9999888877776666555544443333222211110000aaaabbbbccccddddeeeeffff";
+        JwtService forgedService = new JwtService(forgedSecret, 3600000);
+        String forgedToken = forgedService.generateToken("user-999", "abhijeet@example.com", "Abhijeet Singh");
+
+        mockMvc.perform(get("/api/users/me")
+                        .header("Authorization", "Bearer " + forgedToken))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void getCurrentUserShouldFailWithExpiredToken() throws Exception {
+        // Create token with 5ms lifespan and wait 15ms
+        String testSecret = "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970";
+        JwtService shortLivedService = new JwtService(testSecret, 5);
+        String expiredToken = shortLivedService.generateToken("user-999", "abhijeet@example.com", "Abhijeet Singh");
+        Thread.sleep(15);
+
+        mockMvc.perform(get("/api/users/me")
+                        .header("Authorization", "Bearer " + expiredToken))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void getCurrentUserShouldSucceedWithValidBearerToken() throws Exception {
+        Instant now = Instant.now();
         String token = jwtService.generateToken("user-999", "abhijeet@example.com", "Abhijeet Singh");
-        UserResponse userResponse = new UserResponse("user-999", "Abhijeet Singh", "abhijeet@example.com", Instant.now());
+        UserResponse userResponse = new UserResponse("user-999", "Abhijeet Singh", "abhijeet@example.com", now, now);
 
         when(userService.getUserProfile("user-999")).thenReturn(userResponse);
 
@@ -52,6 +84,10 @@ class UserControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value("user-999"))
                 .andExpect(jsonPath("$.email").value("abhijeet@example.com"))
-                .andExpect(jsonPath("$.name").value("Abhijeet Singh"));
+                .andExpect(jsonPath("$.name").value("Abhijeet Singh"))
+                .andExpect(jsonPath("$.createdAt").exists())
+                .andExpect(jsonPath("$.updatedAt").exists())
+                .andExpect(jsonPath("$.password").doesNotExist())
+                .andExpect(jsonPath("$.passwordHash").doesNotExist());
     }
 }
