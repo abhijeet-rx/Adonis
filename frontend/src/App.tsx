@@ -47,30 +47,7 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    let ignore = false;
-    fetch(`${API_BASE_URL}/api/health`)
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
-        return res.json() as Promise<HealthData>;
-      })
-      .then((data) => {
-        if (!ignore) {
-          setHealth(data);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!ignore) {
-          const message = err instanceof Error ? err.message : 'Failed to connect to backend';
-          setError(message);
-          setHealth(null);
-        }
-      });
-
-    return () => {
-      ignore = true;
-    };
+    fetchHealth();
   }, []);
 
   return (
