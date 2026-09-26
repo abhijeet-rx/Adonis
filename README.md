@@ -8,9 +8,11 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 0 — Project Initialization** *(Completed)*
+## Current Development Phase
 
-This phase establishes the monorepo architecture, builds the foundational backend and frontend skeletons, validates health diagnostic endpoints, and configures Docker and CI/CD pipelines.
+**Phase 1 — Authentication + MongoDB + User Management** *(Completed)*
+
+This phase adds persistent identity management with MongoDB, BCrypt password hashing, stateless JWT authentication, protected endpoints, and a full frontend authentication workflow.
 
 ---
 
@@ -18,11 +20,24 @@ This phase establishes the monorepo architecture, builds the foundational backen
 
 | Layer | Technology |
 |---|---|
-| **Backend** | Java 21 LTS, Spring Boot 3.3.4, Maven, Spring Web, Spring Boot Actuator |
+| **Backend** | Java 21 LTS, Spring Boot 3.3.4, Maven, Spring Web, Spring Data MongoDB, Spring Security 6, JJWT 0.12, BCrypt |
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, Lucide Icons |
+| **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017) |
 | **Containerization** | Docker, Docker Compose (Multi-stage builds) |
-| **Testing** | JUnit 5, Spring Boot Test, MockMvc |
+| **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc |
 | **CI/CD** | GitHub Actions |
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `GET` | `/api/health` | Public | System and service health diagnostic |
+| `POST` | `/api/auth/register` | Public | Register new user account with hashed password and return JWT |
+| `POST` | `/api/auth/login` | Public | Authenticate user credentials and return JWT |
+| `GET` | `/api/users/me` | Protected (`Bearer <token>`) | Retrieve authenticated user profile |
+| `GET` | `/actuator/health` | Public | Spring Boot Actuator health metric |
 
 ---
 
@@ -132,16 +147,17 @@ docker compose up --build
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0 — Project Initialization)**:
+- **Current (Phase 0 & Phase 1 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
-  - React 19 + TypeScript + Vite + Tailwind CSS landing/diagnostic dashboard
-  - Environment-based API base URL configuration (`.env.example`)
-  - Multi-stage Docker configurations and Docker Compose baseline
+  - MongoDB 7.0 persistence (`users` collection, unique lowercase email index)
+  - Spring Security 6 stateless authentication with BCrypt password hashing
+  - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`)
+  - React 19 + TypeScript + Vite + Tailwind CSS frontend with registration, login, logout, and protected API testing
+  - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, and `mongodb`
   - Automated GitHub Actions CI pipeline (backend test & frontend build)
 
-- **Planned Functionality (Phases 1–12)**:
-  - MongoDB persistence & User Auth (Planned for Phase 1)
+- **Planned Functionality (Phases 2–12)**:
   - Workflow CRUD APIs (Planned for Phase 2)
   - React Flow visual workflow builder (Planned for Phase 3)
   - Workflow execution engine (Planned for Phase 4)
@@ -159,7 +175,7 @@ docker compose up --build
 ## Roadmap
 
 - [x] **Phase 0 — Project Initialization**
-- [ ] **Phase 1 — Authentication + MongoDB + User Management**
+- [x] **Phase 1 — Authentication + MongoDB + User Management**
 - [ ] **Phase 2 — Workflow CRUD**
 - [ ] **Phase 3 — React Flow Visual Workflow Builder**
 - [ ] **Phase 4 — Workflow Execution Engine**

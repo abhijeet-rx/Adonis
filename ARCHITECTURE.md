@@ -61,14 +61,15 @@ graph TD
 
 ### Component Status (Current vs. Planned)
 
-The architecture diagram above outlines the full platform vision. In the current development stage (**Phase 0**), only the baseline foundation is operational:
+The architecture diagram above outlines the full platform vision. Current development status (**Phase 1**):
 
 | Subsystem / Technology | Status | Implementation Milestone |
 |---|---|---|
-| **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Current) |
-| **Spring Boot 3.3 REST Baseline** | **Operational** (`/api/health`) | Phase 0 (Current) |
-| **React + TypeScript UI Shell** | **Operational** | Phase 0 (Current) |
-| **MongoDB Persistence** | *Planned (Not Implemented)* | Phase 1 (Authentication + MongoDB + User Management) |
+| **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Completed) |
+| **Spring Boot 3.3 REST Baseline** | **Operational** (`/api/health`) | Phase 0 (Completed) |
+| **React + TypeScript UI Shell** | **Operational** (Auth & Diagnostic) | Phase 0 & 1 (Completed) |
+| **MongoDB Persistence** | **Operational** (`users` collection) | Phase 1 (Completed) |
+| **Authentication & User Management** | **Operational** (JWT + BCrypt) | Phase 1 (Completed) |
 | **Workflow CRUD APIs** | *Planned (Not Implemented)* | Phase 2 (Workflow CRUD) |
 | **React Flow Visual Canvas** | *Planned (Not Implemented)* | Phase 3 (React Flow Visual Workflow Builder) |
 | **Workflow Execution Engine** | *Planned (Not Implemented)* | Phase 4 (Workflow Execution Engine) |
@@ -80,19 +81,17 @@ The architecture diagram above outlines the full platform vision. In the current
 
 ---
 
-## 3. Current Phase 0 Architecture
+## 3. Current Phase 1 Architecture
 
-In Phase 0, the baseline client-server communication and runtime infrastructure are established:
+In Phase 1, client-server communication incorporates stateless JWT authentication and MongoDB persistence:
 
 ```
 [Browser / React App] 
       │
-      │  HTTP GET /api/health (CORS-enabled)
-      ▼
-[Spring Boot 3.3.4 Application]
-      │
-      ├── HealthController (`/api/health`) ──> Returns service name, version, status UP
-      └── Actuator (`/actuator/health`)    ──> Returns subsystem health metrics
+      ├── POST /api/auth/register ──> Hashes password (BCrypt), saves User to MongoDB, returns JWT
+      ├── POST /api/auth/login    ──> Verifies password with BCrypt, returns JWT
+      ├── GET  /api/users/me      ──> Authenticated via Bearer JWT, returns user profile
+      └── GET  /api/health        ──> Public health diagnostic
 ```
 
 ### Component Breakdown
