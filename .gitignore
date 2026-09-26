@@ -18,8 +18,8 @@ yarn-error.log*
 
 # Environment and local configurations
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # IDEs and Editors
 .idea/

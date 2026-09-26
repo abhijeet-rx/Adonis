@@ -20,6 +20,8 @@ interface HealthData {
   timestamp: string;
 }
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+
 export const App: React.FC = () => {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -29,14 +31,15 @@ export const App: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('http://localhost:8080/api/health');
+      const res = await fetch(`${API_BASE_URL}/api/health`);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
-      const data = await res.json();
+      const data: HealthData = await res.json();
       setHealth(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to connect to backend');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to connect to backend';
+      setError(message);
       setHealth(null);
     } finally {
       setLoading(false);
@@ -44,7 +47,30 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchHealth();
+    let ignore = false;
+    fetch(`${API_BASE_URL}/api/health`)
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        return res.json() as Promise<HealthData>;
+      })
+      .then((data) => {
+        if (!ignore) {
+          setHealth(data);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!ignore) {
+          const message = err instanceof Error ? err.message : 'Failed to connect to backend';
+          setError(message);
+          setHealth(null);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   return (
@@ -183,25 +209,25 @@ export const App: React.FC = () => {
 
             <div className="p-5 rounded-xl bg-slate-900/40 border border-slate-800/80 opacity-80">
               <Workflow className="w-6 h-6 text-slate-400 mb-3" />
-              <h3 className="font-semibold text-slate-300 text-sm mb-1">Phase 1: Auth &amp; Models</h3>
+              <h3 className="font-semibold text-slate-300 text-sm mb-1">Phase 1: Auth &amp; MongoDB</h3>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Spring Security 6, JWT token lifecycle, user registration &amp; credentials store in MongoDB.
+                User management, Spring Security, JWT token lifecycle, and persistence in MongoDB.
               </p>
             </div>
 
             <div className="p-5 rounded-xl bg-slate-900/40 border border-slate-800/80 opacity-80">
               <Cpu className="w-6 h-6 text-slate-400 mb-3" />
-              <h3 className="font-semibold text-slate-300 text-sm mb-1">Phase 2: Workflow Canvas</h3>
+              <h3 className="font-semibold text-slate-300 text-sm mb-1">Phase 2: Workflow CRUD</h3>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Interactive React Flow node graph builder, custom triggers, logic nodes, and data binding.
+                Workflow definition schemas, REST endpoints for creation, editing, and querying.
               </p>
             </div>
 
             <div className="p-5 rounded-xl bg-slate-900/40 border border-slate-800/80 opacity-80">
               <Sparkles className="w-6 h-6 text-slate-400 mb-3" />
-              <h3 className="font-semibold text-slate-300 text-sm mb-1">Phase 3: Execution &amp; AI</h3>
+              <h3 className="font-semibold text-slate-300 text-sm mb-1">Phase 3: React Flow Canvas</h3>
               <p className="text-xs text-slate-500 leading-relaxed">
-                DAG workflow engine, asynchronous Redis task queue, webhooks, and Gemini / OpenAI connectors.
+                Visual node graph editor, draggable connectors, node configuration modals, and edge validation.
               </p>
             </div>
           </div>

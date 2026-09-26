@@ -53,7 +53,7 @@ This document records the architectural and technical decisions made during the 
 * **Date**: 2026-09-26
 * **Status**: Accepted
 * **Context**: Phase 0 focuses solely on project initialization and health diagnostic baseline without implementing persistence or queues.
-* **Decision**: Keep `docker-compose.yml` focused strictly on `backend` and `frontend` services, documenting MongoDB and Redis as commented placeholders for upcoming phases.
+* **Decision**: Keep `docker-compose.yml` focused strictly on `backend` and `frontend` services, documenting MongoDB (Phase 1) and Redis (Phase 7) as commented placeholders for upcoming phases.
 * **Consequences**:
   - Positive: Prevents phantom/unused container resource consumption and premature configuration drift before actual database schemas are designed.
 

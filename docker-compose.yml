@@ -28,7 +28,7 @@ services:
   # Infrastructure Services (Reserved for subsequent development phases)
   # ---------------------------------------------------------------------------
 
-  # MongoDB (Scheduled for Phase 1: Authentication & Workflow Persistence)
+  # MongoDB (Scheduled for Phase 1: Authentication + MongoDB + User Management)
   # mongodb:
   #   image: mongo:7.0
   #   container_name: adonis-mongodb
@@ -40,7 +40,7 @@ services:
   #     - mongo-data:/data/db
   #   restart: unless-stopped
 
-  # Redis (Scheduled for Phase 4: Asynchronous Task Queue & Pub/Sub)
+  # Redis (Scheduled for Phase 7: Redis Asynchronous Workers)
   # redis:
   #   image: redis:7.2-alpine
   #   container_name: adonis-redis

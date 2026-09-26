@@ -21,29 +21,29 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 ```mermaid
 graph TD
     subgraph Client["Client Tier"]
-        UI["React 19 + TypeScript SPA<br/>(Vite, Tailwind, React Flow)"]
+        UI["React 19 + TypeScript SPA<br/>(Vite, Tailwind, React Flow - Planned Phase 3)"]
     end
 
     subgraph Gateway["API & Ingress Tier"]
-        API["Spring Boot 3.3 REST API<br/>(/api/**, /actuator/**)"]
+        API["Spring Boot 3.3 REST API<br/>(/api/health active, others Phase 1+)"]
         AUTH["Spring Security & JWT<br/>(Planned Phase 1)"]
     end
 
-    subgraph Engine["Execution Tier (Planned)"]
-        DAG["DAG Graph Compiler & Validator"]
-        SYNC["Synchronous Step Engine"]
-        QUEUE["Redis Task Queue / PubSub<br/>(Planned Phase 4)"]
-        WORKER["Async Workflow Worker Pool"]
+    subgraph Engine["Execution Tier (Planned Phase 4)"]
+        DAG["DAG Graph Compiler & Validator<br/>(Planned Phase 4)"]
+        SYNC["Synchronous Step Engine<br/>(Planned Phase 4)"]
+        QUEUE["Redis Task Queue / PubSub<br/>(Planned Phase 7)"]
+        WORKER["Async Workflow Worker Pool<br/>(Planned Phase 7)"]
     end
 
     subgraph Storage["Data & Cache Tier (Planned)"]
-        MONGO[("MongoDB 7.0<br/>Workflows, Users, Execution Logs")]
-        REDIS[("Redis 7.2<br/>Task Queue, Ephemeral State")]
+        MONGO[("MongoDB 7.0<br/>(Planned Phase 1)")]
+        REDIS[("Redis 7.2<br/>(Planned Phase 7)")]
     end
 
-    subgraph Integrations["External Services (Planned Phase 5)"]
-        AI["AI Providers<br/>(Gemini / OpenAI)"]
-        HOOKS["External Webhooks & APIs"]
+    subgraph Integrations["External Services (Planned Phase 8 & 9)"]
+        AI["AI Providers<br/>(Gemini / OpenAI - Planned Phase 9)"]
+        HOOKS["External Webhooks & Schedulers<br/>(Planned Phase 8)"]
     end
 
     UI -->|REST / JSON| API
@@ -58,6 +58,25 @@ graph TD
     WORKER --> AI
     WORKER --> HOOKS
 ```
+
+### Component Status (Current vs. Planned)
+
+The architecture diagram above outlines the full platform vision. In the current development stage (**Phase 0**), only the baseline foundation is operational:
+
+| Subsystem / Technology | Status | Implementation Milestone |
+|---|---|---|
+| **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Current) |
+| **Spring Boot 3.3 REST Baseline** | **Operational** (`/api/health`) | Phase 0 (Current) |
+| **React + TypeScript UI Shell** | **Operational** | Phase 0 (Current) |
+| **MongoDB Persistence** | *Planned (Not Implemented)* | Phase 1 (Authentication + MongoDB + User Management) |
+| **Workflow CRUD APIs** | *Planned (Not Implemented)* | Phase 2 (Workflow CRUD) |
+| **React Flow Visual Canvas** | *Planned (Not Implemented)* | Phase 3 (React Flow Visual Workflow Builder) |
+| **Workflow Execution Engine** | *Planned (Not Implemented)* | Phase 4 (Workflow Execution Engine) |
+| **Execution History & Logs** | *Planned (Not Implemented)* | Phase 5 (Execution History + Logs) |
+| **Retries & Failure Handling** | *Planned (Not Implemented)* | Phase 6 (Retries + Failure Handling) |
+| **Redis Asynchronous Workers** | *Planned (Not Implemented)* | Phase 7 (Redis Asynchronous Workers) |
+| **Scheduling & Webhooks** | *Planned (Not Implemented)* | Phase 8 (Scheduling + Webhooks) |
+| **AI Intelligent Nodes** | *Planned (Not Implemented)* | Phase 9 (AI Nodes) |
 
 ---
 
@@ -101,7 +120,7 @@ backend/src/main/java/com/adonis/
 ├── model/                       # Domain entities & MongoDB documents (Phase 1+)
 ├── repository/                  # Spring Data MongoDB repositories (Phase 1+)
 ├── security/                    # Spring Security configuration, JWT filters (Phase 1+)
-└── service/                     # Workflow business logic & orchestration (Phase 3+)
+└── service/                     # Workflow business logic & orchestration (Phase 4+)
 ```
 
 ---
@@ -112,5 +131,5 @@ backend/src/main/java/com/adonis/
 |---|---|---|---|---|
 | `frontend` | 80 (prod) / 5173 (dev) | 5173 | HTTP | User Interface |
 | `backend` | 8080 | 8080 | HTTP | REST API & Engine |
-| `mongodb` | 27017 | 27017 | TCP | Workflow & User persistence *(Reserved)* |
-| `redis` | 6379 | 6379 | TCP | Async job queue *(Reserved)* |
+| `mongodb` | 27017 | 27017 | TCP | Workflow & User persistence *(Planned Phase 1)* |
+| `redis` | 6379 | 6379 | TCP | Async job queue *(Planned Phase 7)* |

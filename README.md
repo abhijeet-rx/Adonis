@@ -130,13 +130,44 @@ docker compose up --build
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:8080`
 
+## Current Status vs. Planned Milestones
+
+- **Current (Phase 0 — Project Initialization)**:
+  - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
+  - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
+  - React 19 + TypeScript + Vite + Tailwind CSS landing/diagnostic dashboard
+  - Environment-based API base URL configuration (`.env.example`)
+  - Multi-stage Docker configurations and Docker Compose baseline
+  - Automated GitHub Actions CI pipeline (backend test & frontend build)
+
+- **Planned Functionality (Phases 1–12)**:
+  - MongoDB persistence & User Auth (Planned for Phase 1)
+  - Workflow CRUD APIs (Planned for Phase 2)
+  - React Flow visual workflow builder (Planned for Phase 3)
+  - Workflow execution engine (Planned for Phase 4)
+  - Execution history & logs (Planned for Phase 5)
+  - Retries & failure handling (Planned for Phase 6)
+  - Redis asynchronous workers (Planned for Phase 7)
+  - Scheduling & webhooks (Planned for Phase 8)
+  - AI nodes powered by Gemini/OpenAI (Planned for Phase 9)
+  - Automated testing & Testcontainers (Planned for Phase 10)
+  - Production Docker & deployment (Planned for Phase 11)
+  - CI/CD & production hardening (Planned for Phase 12)
+
 ---
 
 ## Roadmap
 
-- [x] **Phase 0**: Project Initialization (Monorepo, Health API, CI, Docker)
-- [ ] **Phase 1**: Authentication & User Management (Spring Security, JWT, MongoDB)
-- [ ] **Phase 2**: Visual Workflow Editor (React Flow Canvas, Node Registry)
-- [ ] **Phase 3**: Core Workflow Engine (DAG execution, synchronous step runner)
-- [ ] **Phase 4**: Asynchronous Processing & Queues (Redis, distributed workers)
-- [ ] **Phase 5**: Integrations & AI Nodes (Gemini/OpenAI, Webhooks, Cron scheduling)
+- [x] **Phase 0 — Project Initialization**
+- [ ] **Phase 1 — Authentication + MongoDB + User Management**
+- [ ] **Phase 2 — Workflow CRUD**
+- [ ] **Phase 3 — React Flow Visual Workflow Builder**
+- [ ] **Phase 4 — Workflow Execution Engine**
+- [ ] **Phase 5 — Execution History + Logs**
+- [ ] **Phase 6 — Retries + Failure Handling**
+- [ ] **Phase 7 — Redis Asynchronous Workers**
+- [ ] **Phase 8 — Scheduling + Webhooks**
+- [ ] **Phase 9 — AI Nodes**
+- [ ] **Phase 10 — Automated Testing + Testcontainers**
+- [ ] **Phase 11 — Docker + Deployment**
+- [ ] **Phase 12 — GitHub Actions CI/CD + Production Hardening**
