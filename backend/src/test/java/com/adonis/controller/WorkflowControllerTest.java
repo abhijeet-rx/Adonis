@@ -166,6 +166,35 @@ class WorkflowControllerTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void createWorkflow_ShouldReturn400WhenStatusIsInvalid() throws Exception {
+        String invalidStatusPayload = """
+                {
+                    "name": "Invalid Status Workflow",
+                    "status": "NONEXISTENT_STATUS"
+                }
+                """;
+
+        mockMvc.perform(post("/api/workflows")
+                        .header("Authorization", "Bearer " + userAToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidStatusPayload))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400));
+    }
+
+    @Test
+    void createWorkflow_ShouldReturn400WhenJsonIsMalformed() throws Exception {
+        String malformedPayload = "{ \"name\": \"Broken JSON\", ";
+
+        mockMvc.perform(post("/api/workflows")
+                        .header("Authorization", "Bearer " + userAToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(malformedPayload))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400));
+    }
+
     // -------------------------------------------------------------
     // LIST WORKFLOWS (GET /api/workflows)
     // -------------------------------------------------------------

@@ -189,19 +189,18 @@ class WorkflowServiceTest {
 
     @Test
     void deleteWorkflow_WhenOwnedByUser_ShouldDelete() {
-        Workflow existing = new Workflow("wf-1", "user-100", "WF1", "Desc", WorkflowStatus.DRAFT, List.of(), List.of(), Instant.now(), Instant.now());
-        when(workflowRepository.findByIdAndUserId("wf-1", "user-100")).thenReturn(Optional.of(existing));
+        when(workflowRepository.deleteByIdAndUserId("wf-1", "user-100")).thenReturn(1L);
 
-        workflowService.deleteWorkflow("wf-1", "user-100");
+        assertDoesNotThrow(() -> workflowService.deleteWorkflow("wf-1", "user-100"));
 
-        verify(workflowRepository).delete(existing);
+        verify(workflowRepository).deleteByIdAndUserId("wf-1", "user-100");
     }
 
     @Test
     void deleteWorkflow_WhenBelongsToAnotherUser_ShouldThrowWorkflowNotFoundException() {
-        when(workflowRepository.findByIdAndUserId("wf-1", "user-B")).thenReturn(Optional.empty());
+        when(workflowRepository.deleteByIdAndUserId("wf-1", "user-B")).thenReturn(0L);
 
         assertThrows(WorkflowNotFoundException.class, () -> workflowService.deleteWorkflow("wf-1", "user-B"));
-        verify(workflowRepository, never()).delete(any());
+        verify(workflowRepository).deleteByIdAndUserId("wf-1", "user-B");
     }
 }

@@ -153,18 +153,18 @@ docker compose up --build
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0 & Phase 1 — Operational)**:
+- **Current (Phase 0, Phase 1 & Phase 2 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
-  - MongoDB 7.0 persistence (`users` collection, unique lowercase email index)
+  - MongoDB 7.0 persistence (`users` and `workflows` collections)
   - Spring Security 6 stateless authentication with BCrypt password hashing
-  - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`)
-  - React 19 + TypeScript + Vite + Tailwind CSS frontend with registration, login, logout, and protected API testing
+  - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`)
+  - Workflow CRUD REST API (`POST`, `GET`, `GET {id}`, `PUT {id}`, `DELETE {id}`) with ownership-level query isolation
+  - React 19 + TypeScript + Vite + Tailwind CSS frontend with authentication and workflow CRUD management
   - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, and `mongodb`
   - Automated GitHub Actions CI pipeline (backend test & frontend build)
 
-- **Planned Functionality (Phases 2–12)**:
-  - Workflow CRUD APIs (Planned for Phase 2)
+- **Planned Functionality (Phases 3–12)**:
   - React Flow visual workflow builder (Planned for Phase 3)
   - Workflow execution engine (Planned for Phase 4)
   - Execution history & logs (Planned for Phase 5)
@@ -182,7 +182,7 @@ docker compose up --build
 
 - [x] **Phase 0 — Project Initialization**
 - [x] **Phase 1 — Authentication + MongoDB + User Management**
-- [ ] **Phase 2 — Workflow CRUD**
+- [x] **Phase 2 — Workflow CRUD**
 - [ ] **Phase 3 — React Flow Visual Workflow Builder**
 - [ ] **Phase 4 — Workflow Execution Engine**
 - [ ] **Phase 5 — Execution History + Logs**

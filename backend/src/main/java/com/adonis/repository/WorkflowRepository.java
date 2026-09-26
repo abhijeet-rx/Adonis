@@ -14,7 +14,7 @@ public interface WorkflowRepository extends MongoRepository<Workflow, String> {
 
     Optional<Workflow> findByIdAndUserId(String id, String userId);
 
-    void deleteByIdAndUserId(String id, String userId);
+    long deleteByIdAndUserId(String id, String userId);
 
     boolean existsByIdAndUserId(String id, String userId);
 }

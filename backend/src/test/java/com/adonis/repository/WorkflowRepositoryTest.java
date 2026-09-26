@@ -79,7 +79,24 @@ class WorkflowRepositoryTest {
 
         Optional<Workflow> retrieved = workflowRepository.findById(saved.getId());
         assertTrue(retrieved.isPresent());
-        assertEquals("Order Processing", retrieved.get().getName());
+        Workflow found = retrieved.get();
+        assertEquals(saved.getId(), found.getId());
+        assertEquals("user-1", found.getUserId());
+        assertEquals("Order Processing", found.getName());
+        assertEquals("Handles customer orders", found.getDescription());
+        assertEquals(WorkflowStatus.ACTIVE, found.getStatus());
+        assertNotNull(found.getCreatedAt());
+        assertNotNull(found.getUpdatedAt());
+
+        assertEquals(1, found.getNodes().size());
+        assertEquals("node-1", found.getNodes().get(0).getId());
+        assertEquals("http-request", found.getNodes().get(0).getType());
+        assertEquals("https://api.example.com", found.getNodes().get(0).getData().get("url"));
+
+        assertEquals(1, found.getEdges().size());
+        assertEquals("edge-1", found.getEdges().get(0).getId());
+        assertEquals("node-1", found.getEdges().get(0).getSource());
+        assertEquals("node-2", found.getEdges().get(0).getTarget());
     }
 
     @Test
@@ -122,13 +139,15 @@ class WorkflowRepositoryTest {
         );
 
         // Attempt delete with wrong user ID
-        workflowRepository.deleteByIdAndUserId(wf.getId(), "user-B");
+        long nonOwnerDeleted = workflowRepository.deleteByIdAndUserId(wf.getId(), "user-B");
+        assertEquals(0L, nonOwnerDeleted);
 
         // Workflow still exists
         assertTrue(workflowRepository.findById(wf.getId()).isPresent());
 
         // Delete with correct owner ID
-        workflowRepository.deleteByIdAndUserId(wf.getId(), "user-A");
+        long ownerDeleted = workflowRepository.deleteByIdAndUserId(wf.getId(), "user-A");
+        assertEquals(1L, ownerDeleted);
 
         // Workflow is now deleted
         assertTrue(workflowRepository.findById(wf.getId()).isEmpty());

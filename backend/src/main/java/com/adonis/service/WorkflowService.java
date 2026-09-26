@@ -70,8 +70,9 @@ public class WorkflowService {
     }
 
     public void deleteWorkflow(String id, String userId) {
-        Workflow workflow = workflowRepository.findByIdAndUserId(id, userId)
-                .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found with id: " + id));
-        workflowRepository.delete(workflow);
+        long deletedCount = workflowRepository.deleteByIdAndUserId(id, userId);
+        if (deletedCount == 0) {
+            throw new WorkflowNotFoundException("Workflow not found with id: " + id);
+        }
     }
 }
