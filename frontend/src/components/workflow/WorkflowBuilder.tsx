@@ -320,6 +320,19 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
     onBack();
   };
 
+  // Reload confirmation
+  const handleReload = async () => {
+    if (isDirty) {
+      const confirmed = window.confirm(
+        'You have unsaved changes in this workflow. Reloading will discard them. Continue?'
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+    await loadWorkflow();
+  };
+
   return (
     <div className="flex flex-col h-[calc(100vh-64px)] w-full bg-[#090d16] text-slate-100 overflow-hidden select-none">
       {/* Top Builder Toolbar */}
@@ -391,7 +404,7 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
         {/* Toolbar Right: Actions */}
         <div className="flex items-center gap-2">
           <button
-            onClick={() => void loadWorkflow()}
+            onClick={() => void handleReload()}
             disabled={isLoading || isSaving}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition disabled:opacity-50"
             title="Reload canvas from server"

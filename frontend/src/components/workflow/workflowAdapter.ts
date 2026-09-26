@@ -83,8 +83,8 @@ export function reactFlowToWorkflow(
     id: node.id,
     type: node.type || NODE_TYPES.GENERIC,
     position: {
-      x: Math.round(node.position.x),
-      y: Math.round(node.position.y)
+      x: node.position.x,
+      y: node.position.y
     },
     data: {
       ...node.data

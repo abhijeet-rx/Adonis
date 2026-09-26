@@ -190,7 +190,7 @@ class WorkflowServiceTest {
                 "node-flow-1",
                 "httpRequest",
                 Map.of("label", "Call Service"),
-                new WorkflowNodePosition(300.0, 450.0)
+                new WorkflowNodePosition(250.75, 350.125)
         );
         WorkflowEdge edge = new WorkflowEdge("edge-flow-1", "node-flow-1", "node-flow-2", "output", "input");
 
@@ -207,8 +207,8 @@ class WorkflowServiceTest {
         assertEquals("Visual Canvas Workflow", response.name());
         assertEquals(1, response.nodes().size());
         assertNotNull(response.nodes().get(0).getPosition());
-        assertEquals(300.0, response.nodes().get(0).getPosition().getX());
-        assertEquals(450.0, response.nodes().get(0).getPosition().getY());
+        assertEquals(250.75, response.nodes().get(0).getPosition().getX());
+        assertEquals(350.125, response.nodes().get(0).getPosition().getY());
         assertEquals(1, response.edges().size());
         assertEquals("output", response.edges().get(0).getSourceHandle());
         assertEquals("input", response.edges().get(0).getTargetHandle());

@@ -106,7 +106,7 @@ class WorkflowRepositoryTest {
                 "node-visual-1",
                 "httpRequest",
                 Map.of("label", "Fetch Data", "url", "https://api.example.com", "method", "GET"),
-                new WorkflowNodePosition(250.5, 350.0)
+                new WorkflowNodePosition(250.75, 350.125)
         );
         WorkflowEdge edge = new WorkflowEdge("edge-visual-1", "node-visual-1", "node-visual-2", "source-handle-1", "target-handle-1");
 
@@ -122,8 +122,8 @@ class WorkflowRepositoryTest {
         WorkflowNode foundNode = found.getNodes().get(0);
         assertEquals("node-visual-1", foundNode.getId());
         assertNotNull(foundNode.getPosition());
-        assertEquals(250.5, foundNode.getPosition().getX());
-        assertEquals(350.0, foundNode.getPosition().getY());
+        assertEquals(250.75, foundNode.getPosition().getX());
+        assertEquals(350.125, foundNode.getPosition().getY());
 
         assertEquals(1, found.getEdges().size());
         WorkflowEdge foundEdge = found.getEdges().get(0);
