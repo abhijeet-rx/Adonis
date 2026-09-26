@@ -8,9 +8,9 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 1 — Authentication + MongoDB + User Management** *(Completed)*
+**Phase 2 — Workflow CRUD** *(Completed)*
 
-This phase adds persistent identity management with MongoDB, BCrypt password hashing, stateless JWT authentication, protected endpoints, and a full frontend authentication workflow.
+This phase introduces the workflow domain, MongoDB persistence for workflow definitions, RESTful CRUD endpoints, strict user ownership isolation derived from JWT identity, request validation, and comprehensive automated test suites.
 
 ---
 
@@ -22,7 +22,7 @@ This phase adds persistent identity management with MongoDB, BCrypt password has
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, Lucide Icons |
 | **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017) |
 | **Containerization** | Docker, Docker Compose (Multi-stage builds) |
-| **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc |
+| **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc, pure-Java in-memory MongoServer |
 | **CI/CD** | GitHub Actions |
 
 ---
@@ -35,7 +35,15 @@ This phase adds persistent identity management with MongoDB, BCrypt password has
 | `POST` | `/api/auth/register` | Public | Register new user account with hashed password and return JWT |
 | `POST` | `/api/auth/login` | Public | Authenticate user credentials and return JWT |
 | `GET` | `/api/users/me` | Protected (`Bearer <token>`) | Retrieve authenticated user profile |
+| `POST` | `/api/workflows` | Protected (`Bearer <token>`) | Create a new workflow for the authenticated user |
+| `GET` | `/api/workflows` | Protected (`Bearer <token>`) | List all workflows owned by the authenticated user |
+| `GET` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Retrieve specific workflow (returns 404 if not owned or nonexistent) |
+| `PUT` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Update workflow fields (name, description, status, nodes, edges) |
+| `DELETE` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Delete workflow by ID (returns 204 No Content) |
 | `GET` | `/actuator/health` | Public | Spring Boot Actuator health metric |
+
+> **Workflow Ownership & Privacy**:
+> Workflows are strictly scoped to the authenticated user derived from the validated JWT token (`UserPrincipal.id()`). Lookups, updates, and deletions enforce ownership in database-level queries (`findByIdAndUserId`), ensuring users can never see, modify, or delete another user's workflows. Non-owned workflows return `404 Not Found` without leaking document existence.
 
 ---
 

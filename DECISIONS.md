@@ -122,3 +122,37 @@ This document records the architectural and technical decisions made during the 
 * **Decision**: Defer Redis container activation to Phase 7. Defer Testcontainers to Phase 10. For Phase 1 repository-level tests, use pure Java in-memory MongoDB server (`mongo-java-server`) allowing fast, hermetic, Docker-free unit and repository testing without binary downloads.
 * **Consequences**:
   - Positive: Keeps Phase 1 lightweight, eliminates extraneous runtime dependencies, and avoids Docker daemon requirements during unit test execution.
+
+---
+
+## Phase 2: Workflow CRUD
+
+### ADR-012: Workflow Domain Model and Document Persistence in MongoDB
+* **Date**: 2026-09-26
+* **Status**: Accepted
+* **Context**: Phase 2 requires persisting workflow definitions (nodes and edges) along with metadata (name, description, status, creation/update timestamps) for authenticated users.
+* **Decision**: Represent workflows as MongoDB documents in a dedicated `workflows` collection. Store nodes (`WorkflowNode`: `id`, `type`, `data`) and edges (`WorkflowEdge`: `id`, `source`, `target`) directly as embedded documents within the workflow. Define lifecycle states via `WorkflowStatus` (`DRAFT`, `ACTIVE`).
+* **Consequences**:
+  - Positive: Natural alignment with JSON graph structures (future React Flow integration) and atomic document updates without complex relational joins.
+  - Trade-off: Document size is bounded by MongoDB 16MB document limit, which is more than sufficient for workflow DAGs.
+
+---
+
+### ADR-013: User Ownership Enforcement and Query-Level Isolation
+* **Date**: 2026-09-26
+* **Status**: Accepted
+* **Context**: Multi-tenant isolation is critical: users must only ever see, modify, or delete their own workflows. Workflow ownership must never be spoofable by client input.
+* **Decision**: Derive `userId` exclusively from the authenticated JWT token identity (`UserPrincipal.id()`). Enforce query-level filtering in MongoDB queries (`findByUserId`, `findByIdAndUserId`). If a user requests or attempts to mutate a workflow belonging to another user, return HTTP `404 Not Found` rather than `403 Forbidden`.
+* **Consequences**:
+  - Positive: Guarantees zero cross-user access, avoids leaking the existence of other users' workflows, and eliminates in-memory post-filtering.
+  - Trade-off: Clients must be properly authenticated via `Authorization: Bearer <token>` for all `/api/workflows` endpoints.
+
+---
+
+### ADR-014: Strict Deferral of Visual Canvas (React Flow) and Execution Engine
+* **Date**: 2026-09-26
+* **Status**: Accepted
+* **Context**: The full system roadmap includes a visual React Flow canvas, node execution engine, Redis workers, and AI integration. Attempting to build these prematurely risks over-engineering and architectural debt.
+* **Decision**: Strictly limit Phase 2 to workflow CRUD data modeling and REST API contracts. Defer React Flow visual canvas to Phase 3, execution engine to Phase 4, execution history to Phase 5, and Redis task workers to Phase 7.
+* **Consequences**:
+  - Positive: Maintains clean architectural boundaries, keeps the test surface focused and reliable, and enables incremental delivery.

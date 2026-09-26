@@ -16,9 +16,9 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-## 2. Current Architecture (Phase 1 Operational)
+## 2. Current Architecture (Phase 2 Operational)
 
-In Phase 1, the operational system topology follows a clean layered pipeline:
+In Phase 2, the operational system topology extends the layered pipeline with workflow domain persistence:
 
 ```text
 React (Vite + TypeScript + Tailwind)
@@ -27,9 +27,11 @@ Spring Boot REST API (Java 21, Spring Boot 3.3.4)
    ↓
 Spring Security + JWT (Stateless filter, BCrypt password encoder)
    ↓
-User Management (AuthService, UserService)
+Service Layer (AuthService, UserService, WorkflowService)
    ↓
-MongoDB (Spring Data MongoDB, 7.0 container, unique index on lowercase email)
+MongoDB (Spring Data MongoDB, 7.0 container)
+   ├── Collection: users (unique index on lowercase email)
+   └── Collection: workflows (indexed by userId for ownership isolation)
 ```
 
 ### Component Status (Implemented vs. Deferred)
@@ -39,10 +41,10 @@ MongoDB (Spring Data MongoDB, 7.0 container, unique index on lowercase email)
 | **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Completed) |
 | **Spring Boot 3.3 REST Baseline** | **Operational** (`GET /api/health`) | Phase 0 (Completed) |
 | **React + TypeScript UI Shell** | **Operational** (Landing & Diagnostics) | Phase 0 (Completed) |
-| **MongoDB Persistence** | **Operational** (Document `User`, collection `users`) | Phase 1 (Completed) |
+| **MongoDB Persistence** | **Operational** (Documents `User`, `Workflow`) | Phase 1 & 2 (Completed) |
 | **Authentication & User Management** | **Operational** (Stateless JWT + BCrypt) | Phase 1 (Completed) |
 | **Protected User Profile API** | **Operational** (`GET /api/users/me`) | Phase 1 (Completed) |
-| **Workflow CRUD APIs** | *NOT Implemented* | Phase 2 (Workflow CRUD) |
+| **Workflow CRUD APIs** | **Operational** (`POST/GET/PUT/DELETE /api/workflows`) | Phase 2 (Completed) |
 | **React Flow Visual Canvas** | *NOT Implemented* | Phase 3 (React Flow Builder) |
 | **Workflow Execution Engine** | *NOT Implemented* | Phase 4 (Execution Engine) |
 | **Execution History & Logs** | *NOT Implemented* | Phase 5 (Execution History + Logs) |
@@ -54,31 +56,57 @@ MongoDB (Spring Data MongoDB, 7.0 container, unique index on lowercase email)
 | **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |
 | **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |
 
+> **Explicit Boundary**: Workflow execution, DAG compilation, scheduling, Redis worker queues, AI integrations, and the visual React Flow canvas are **NOT** part of Phase 2. Phase 2 strictly encompasses workflow definition persistence and ownership-isolated CRUD operations.
+
 ---
 
-## 3. High-Level Topology (Current Operational vs Future Planned)
+## 3. Workflow Domain & Ownership Isolation
+
+### Workflow Document Structure
+Each workflow document in MongoDB (`workflows` collection) represents a persistent graph definition:
+- `id`: Unique identifier (auto-generated MongoDB ObjectID string).
+- `userId`: Owner ID, strictly set from the verified `UserPrincipal.id()` in JWT.
+- `name`: Workflow title (1–100 characters, required).
+- `description`: Optional overview (up to 500 characters).
+- `status`: Lifecycle state (`DRAFT`, `ACTIVE`).
+- `nodes`: List of `WorkflowNode` objects (`id`, `type`, `data`).
+- `edges`: List of `WorkflowEdge` objects (`id`, `source`, `target`).
+- `createdAt` / `updatedAt`: Server-managed timestamps.
+
+### Ownership Enforcement & Security Guarantees
+1. **No Client-Controlled Ownership**: The client cannot specify or mutate `userId`.
+2. **Database-Level Isolation**:
+   - `findByUserId(userId)` ensures a user's listing only scans and returns their own workflows.
+   - `findByIdAndUserId(id, userId)` scopes retrieval, mutation, and deletion to the owner at query time.
+3. **No Cross-Tenant Existence Leaks**: Attempting to query, update, or delete a workflow belonging to another user returns `404 Not Found` (never 403), entirely hiding whether the workflow ID exists.
+
+---
+
+## 4. High-Level Topology (Operational vs Planned)
 
 ```mermaid
 graph TD
     subgraph Client["Client Tier (Operational)"]
-        UI["React 19 + TypeScript SPA<br/>(Vite, Tailwind, Auth UI)"]
+        UI["React 19 + TypeScript SPA<br/>(Auth UI & Workflow CRUD)"]
     end
 
     subgraph Gateway["API & Ingress Tier (Operational)"]
-        API["Spring Boot 3.3 REST API<br/>(/api/health, /api/auth/*, /api/users/me)"]
+        API["Spring Boot 3.3 REST API<br/>(/api/health, /api/auth/*, /api/users/me, /api/workflows/*)"]
         AUTH["Spring Security & JWT Filter<br/>(Stateless Bearer token validation)"]
     end
 
     subgraph ServiceLayer["Service & Business Logic (Operational)"]
         AUTH_SVC["AuthService (Register, Login, BCrypt)"]
         USER_SVC["UserService (Profile retrieval)"]
+        WF_SVC["WorkflowService (CRUD & Ownership Scoping)"]
     end
 
     subgraph Storage["Data Tier (Operational)"]
-        MONGO[("MongoDB 7.0<br/>(Collection: users, unique email index)")]
+        MONGO[("MongoDB 7.0<br/>(Collections: users, workflows)")]
     end
 
     subgraph Deferred["Deferred Subsystems (NOT Implemented)"]
+        CANVAS["React Flow Canvas (Planned Phase 3)"]
         ENGINE["Workflow Execution Engine (Planned Phase 4)"]
         REDIS[("Redis Task Queue (Planned Phase 7)")]
         AI["AI Provider Integrations (Planned Phase 9)"]
@@ -88,49 +116,55 @@ graph TD
     API --> AUTH
     AUTH --> AUTH_SVC
     AUTH --> USER_SVC
+    AUTH --> WF_SVC
     AUTH_SVC --> MONGO
     USER_SVC --> MONGO
+    WF_SVC --> MONGO
 ```
 
 ---
 
-## 4. Current Phase 1 Request Flows
+## 5. Current Request Flows
 
 ```
 [Browser / React App] 
       │
-      ├── POST /api/auth/register ──> Validates input, hashes password (BCrypt), persists User to MongoDB, returns JWT
-      ├── POST /api/auth/login    ──> Verifies credentials with BCrypt, returns JWT (generic 401 on failure)
-      ├── GET  /api/users/me      ──> Authenticated via Bearer JWT, extracts UserPrincipal, returns UserResponse
-      └── GET  /api/health        ──> Public health diagnostic (Phase 0)
+      ├── POST /api/auth/register    ──> Validates input, hashes password (BCrypt), persists User to MongoDB, returns JWT
+      ├── POST /api/auth/login       ──> Verifies credentials with BCrypt, returns JWT
+      ├── GET  /api/users/me         ──> Authenticated via Bearer JWT, extracts UserPrincipal, returns UserResponse
+      ├── POST /api/workflows        ──> Authenticated via JWT, binds userId = principal.id(), persists Workflow
+      ├── GET  /api/workflows        ──> Authenticated via JWT, queries findByUserId(principal.id())
+      ├── GET  /api/workflows/{id}   ──> Authenticated via JWT, queries findByIdAndUserId, returns 404 on cross-user
+      ├── PUT  /api/workflows/{id}   ──> Authenticated via JWT, updates mutable fields, refreshes updatedAt, returns 404 on cross-user
+      ├── DELETE /api/workflows/{id} ──> Authenticated via JWT, deletes own workflow, returns 204 (404 on cross-user)
+      └── GET  /api/health           ──> Public health diagnostic (Phase 0)
 ```
 
 ---
 
-## 5. Package Architecture (Backend)
-
-The backend follows a layered architecture with strict dependency flow:
+## 6. Package Architecture (Backend)
 
 ```
 backend/src/main/java/com/adonis/
 ├── AdonisApplication.java       # Application Bootstrap
 ├── config/                      # Web MVC, CORS configuration
-├── controller/                  # REST Controllers (HealthController, AuthController, UserController)
-├── dto/                         # Strongly-typed Java 21 Records (RegisterRequest, LoginRequest, UserResponse, AuthResponse, ErrorResponse)
-├── exception/                   # Global exception handling (GlobalExceptionHandler, EmailAlreadyExistsException, UserNotFoundException)
-├── model/                       # MongoDB Document Models (User)
-├── repository/                  # Spring Data MongoDB Repositories (UserRepository)
+├── controller/                  # REST Controllers (HealthController, AuthController, UserController, WorkflowController)
+├── dto/                         # Strongly-typed Java 21 Records (CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowResponse, etc.)
+├── exception/                   # Global exception handling (GlobalExceptionHandler, WorkflowNotFoundException, etc.)
+├── model/                       # MongoDB Document Models (User, Workflow, WorkflowNode, WorkflowEdge, WorkflowStatus)
+├── repository/                  # Spring Data MongoDB Repositories (UserRepository, WorkflowRepository)
 ├── security/                    # SecurityConfig, JwtService, JwtAuthenticationFilter, UserPrincipal
-└── service/                     # Business Logic (AuthService, UserService)
+└── service/                     # Business Logic (AuthService, UserService, WorkflowService)
 ```
 
 ---
 
-## 6. Port Allocations & Networking
+## 7. Port Allocations & Networking
 
 | Service | Internal Port | Host / Exposed Port | Protocol | Status | Purpose |
 |---|---|---|---|---|---|
-| `frontend` | 80 (prod) / 5173 (dev) | 5173 | HTTP | **Operational** | User Interface & Auth Dashboard |
+| `frontend` | 80 (prod) / 5173 (dev) | 5173 | HTTP | **Operational** | User Interface & Workflow CRUD Dashboard |
 | `backend` | 8080 | 8080 | HTTP | **Operational** | REST API & Security Engine |
-| `mongodb` | 27017 | 27017 | TCP | **Operational** | MongoDB 7.0 User Persistence |
+| `mongodb` | 27017 | 27017 | TCP | **Operational** | MongoDB 7.0 User & Workflow Persistence |
 | `redis` | 6379 | 6379 | TCP | *Deferred (Phase 7)* | Async job queue & worker tasks |
+

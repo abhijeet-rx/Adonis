@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Activity, 
-  Workflow, 
+  Workflow as WorkflowIcon, 
   Layers, 
   Cpu, 
   Sparkles, 
@@ -16,9 +16,13 @@ import {
   LogOut, 
   KeyRound, 
   Mail, 
-  User as UserIcon, 
-  AlertCircle 
+  User as UserIcon,
+  AlertCircle,
+  Plus,
+  Trash2,
+  FolderGit2
 } from 'lucide-react';
+import { workflowApi, type Workflow, type WorkflowStatus } from './services/workflowService';
 
 interface HealthData {
   status: string;
@@ -65,6 +69,15 @@ export const App: React.FC = () => {
   const [protectedMessage, setProtectedMessage] = useState<string | null>(null);
   const [protectedError, setProtectedError] = useState<string | null>(null);
 
+  // Workflow State (Phase 2 CRUD)
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [workflowsLoading, setWorkflowsLoading] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [wfName, setWfName] = useState('');
+  const [wfDesc, setWfDesc] = useState('');
+  const [wfStatus, setWfStatus] = useState<WorkflowStatus>('DRAFT');
+  const [creatingWf, setCreatingWf] = useState(false);
+
   const fetchHealth = async () => {
     setHealthLoading(true);
     setHealthError(null);
@@ -88,6 +101,8 @@ export const App: React.FC = () => {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
     setToken(null);
     setCurrentUser(null);
+    setWorkflows([]);
+    setWorkflowError(null);
     setProtectedMessage(null);
     setProtectedError(null);
     setAuthSuccess('You have been logged out.');
@@ -113,11 +128,58 @@ export const App: React.FC = () => {
     }
   };
 
+  const loadWorkflows = async (authToken: string) => {
+    setWorkflowsLoading(true);
+    setWorkflowError(null);
+    try {
+      const data = await workflowApi.listWorkflows(authToken);
+      setWorkflows(data);
+    } catch (err: unknown) {
+      setWorkflowError(err instanceof Error ? err.message : 'Failed to load workflows');
+    } finally {
+      setWorkflowsLoading(false);
+    }
+  };
+
+  const handleCreateWorkflow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token || !wfName.trim()) return;
+    setCreatingWf(true);
+    setWorkflowError(null);
+    try {
+      await workflowApi.createWorkflow({
+        name: wfName.trim(),
+        description: wfDesc.trim() || undefined,
+        status: wfStatus,
+        nodes: [],
+        edges: []
+      }, token);
+      setWfName('');
+      setWfDesc('');
+      await loadWorkflows(token);
+    } catch (err: unknown) {
+      setWorkflowError(err instanceof Error ? err.message : 'Failed to create workflow');
+    } finally {
+      setCreatingWf(false);
+    }
+  };
+
+  const handleDeleteWorkflow = async (id: string) => {
+    if (!token) return;
+    try {
+      await workflowApi.deleteWorkflow(id, token);
+      await loadWorkflows(token);
+    } catch (err: unknown) {
+      setWorkflowError(err instanceof Error ? err.message : 'Failed to delete workflow');
+    }
+  };
+
   useEffect(() => {
     void fetchHealth();
     const storedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
     if (storedToken) {
       void loadUserProfile(storedToken);
+      void loadWorkflows(storedToken);
     }
   }, []);
 
@@ -144,6 +206,7 @@ export const App: React.FC = () => {
       localStorage.setItem(TOKEN_STORAGE_KEY, authData.token);
       setToken(authData.token);
       setCurrentUser(authData.user);
+      void loadWorkflows(authData.token);
       setFormPassword('');
       setAuthSuccess(`Welcome back, ${authData.user.name}!`);
     } catch (err: unknown) {
@@ -177,6 +240,7 @@ export const App: React.FC = () => {
       localStorage.setItem(TOKEN_STORAGE_KEY, authData.token);
       setToken(authData.token);
       setCurrentUser(authData.user);
+      void loadWorkflows(authData.token);
       setFormPassword('');
       setFormName('');
       setAuthSuccess(`Account created successfully! Welcome, ${authData.user.name}.`);
@@ -227,14 +291,14 @@ export const App: React.FC = () => {
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-              <Workflow className="w-5 h-5 text-slate-950 font-bold" />
+              <WorkflowIcon className="w-5 h-5 text-slate-950 font-bold" />
             </div>
             <div>
               <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
                 Adonis
               </span>
               <span className="ml-2 text-xs font-mono font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                Phase 1: Auth &amp; MongoDB
+                Phase 2: Workflow CRUD
               </span>
             </div>
           </div>
@@ -491,6 +555,110 @@ export const App: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* Phase 2: Workflow CRUD Management Card */}
+              <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/60 pb-3">
+                  <div className="flex items-center gap-2">
+                    <FolderGit2 className="w-4 h-4 text-emerald-400" />
+                    <span className="text-sm font-semibold text-white">Workflows ({workflows.length})</span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Phase 2 CRUD</span>
+                  </div>
+                  <button
+                    onClick={() => token && void loadWorkflows(token)}
+                    disabled={workflowsLoading}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${workflowsLoading ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </button>
+                </div>
+
+                {workflowError && (
+                  <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>{workflowError}</span>
+                  </div>
+                )}
+
+                {/* Create Workflow Form */}
+                <form onSubmit={handleCreateWorkflow} className="grid grid-cols-1 sm:grid-cols-12 gap-3 p-3.5 rounded-lg bg-slate-950/70 border border-slate-800/60">
+                  <div className="sm:col-span-4">
+                    <input
+                      type="text"
+                      placeholder="Workflow name"
+                      value={wfName}
+                      onChange={(e) => setWfName(e.target.value)}
+                      maxLength={100}
+                      required
+                      className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div className="sm:col-span-5">
+                    <input
+                      type="text"
+                      placeholder="Description (optional)"
+                      value={wfDesc}
+                      onChange={(e) => setWfDesc(e.target.value)}
+                      maxLength={500}
+                      className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <select
+                      value={wfStatus}
+                      onChange={(e) => setWfStatus(e.target.value as WorkflowStatus)}
+                      className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-xs text-white focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="DRAFT">DRAFT</option>
+                      <option value="ACTIVE">ACTIVE</option>
+                    </select>
+                  </div>
+                  <div className="sm:col-span-1">
+                    <button
+                      type="submit"
+                      disabled={creatingWf || !wfName.trim()}
+                      className="w-full h-full flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition disabled:opacity-50"
+                      title="Create Workflow"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </form>
+
+                {/* Workflow List */}
+                <div className="space-y-2">
+                  {workflowsLoading && workflows.length === 0 ? (
+                    <div className="text-center py-4 text-xs text-slate-500">Loading workflows...</div>
+                  ) : workflows.length === 0 ? (
+                    <div className="text-center py-4 text-xs text-slate-500">No workflows created yet. Create your first workflow above.</div>
+                  ) : (
+                    workflows.map((wf) => (
+                      <div key={wf.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-950/60 border border-slate-800/60 hover:border-slate-700/80 transition">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-white">{wf.name}</span>
+                            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${wf.status === 'ACTIVE' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
+                              {wf.status}
+                            </span>
+                          </div>
+                          {wf.description && <p className="text-[11px] text-slate-400">{wf.description}</p>}
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            ID: {wf.id} &bull; Created: {new Date(wf.createdAt).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteWorkflow(wf.id)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                          title="Delete workflow"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </section>
@@ -560,7 +728,7 @@ export const App: React.FC = () => {
               <Layers className="w-5 h-5 text-emerald-400" />
               Architecture &amp; Incremental Roadmap
             </h2>
-            <span className="text-xs text-slate-400">Phase 1 in progress</span>
+            <span className="text-xs text-slate-400">Phase 2 in progress</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -575,10 +743,10 @@ export const App: React.FC = () => {
               </p>
             </div>
 
-            <div className="p-5 rounded-xl bg-slate-900/50 border border-emerald-500/40 relative overflow-hidden">
+            <div className="p-5 rounded-xl bg-slate-900/50 border border-slate-800/80">
               <div className="flex items-center justify-between mb-3">
                 <KeyRound className="w-6 h-6 text-emerald-400" />
-                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20">Active</span>
+                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20">Done</span>
               </div>
               <h3 className="font-semibold text-white text-sm mb-1">Phase 1: Auth &amp; MongoDB</h3>
               <p className="text-xs text-slate-300 leading-relaxed">
@@ -586,14 +754,14 @@ export const App: React.FC = () => {
               </p>
             </div>
 
-            <div className="p-5 rounded-xl bg-slate-900/40 border border-slate-800/80 opacity-80">
+            <div className="p-5 rounded-xl bg-slate-900/50 border border-emerald-500/40 relative overflow-hidden">
               <div className="flex items-center justify-between mb-3">
-                <Cpu className="w-6 h-6 text-slate-400" />
-                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2 py-0.5 rounded bg-slate-800">Planned</span>
+                <Cpu className="w-6 h-6 text-emerald-400" />
+                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20">Active</span>
               </div>
-              <h3 className="font-semibold text-slate-300 text-sm mb-1">Phase 2: Workflow CRUD</h3>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Workflow definition schemas, REST endpoints for creation, editing, and querying.
+              <h3 className="font-semibold text-white text-sm mb-1">Phase 2: Workflow CRUD</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Workflow MongoDB document, user ownership isolation, REST CRUD endpoints, validation, and security tests.
               </p>
             </div>
 
