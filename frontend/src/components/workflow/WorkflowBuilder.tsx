@@ -26,7 +26,8 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  Play
 } from 'lucide-react';
 
 import {
@@ -40,10 +41,12 @@ import { HttpRequestNode } from './HttpRequestNode';
 import { GenericNode } from './GenericNode';
 import { NodePalette } from './NodePalette';
 import { NodeConfigPanel } from './NodeConfigPanel';
+import { ExecutionResultModal } from './ExecutionResultModal';
 import {
   workflowApi,
   type Workflow,
-  type WorkflowStatus
+  type WorkflowStatus,
+  type WorkflowExecutionResult
 } from '../../services/workflowService';
 
 interface WorkflowBuilderProps {
@@ -76,6 +79,11 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
 
   // Dirty state tracking
   const [isDirty, setIsDirty] = useState(false);
+
+  // Execution state (Phase 4)
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executionResult, setExecutionResult] = useState<WorkflowExecutionResult | null>(null);
+  const [showExecutionModal, setShowExecutionModal] = useState(false);
 
   // React Flow state
   const [nodes, setNodes, onNodesChangeOriginal] = useNodesState<Node<CustomNodeData>>([]);
@@ -309,6 +317,47 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
     }
   };
 
+  // Execute workflow (Phase 4)
+  const handleExecute = async () => {
+    if (!workflow || isExecuting) return;
+
+    setIsExecuting(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      // If there are unsaved changes, save first so latest graph is executed
+      if (isDirty) {
+        const { nodes: convertedNodes, edges: convertedEdges } = reactFlowToWorkflow(nodes, edges);
+        const updated = await workflowApi.updateWorkflow(
+          workflow.id,
+          {
+            name: workflowName.trim() || workflow.name,
+            description: workflowDescription.trim() || undefined,
+            status: workflowStatus,
+            nodes: convertedNodes,
+            edges: convertedEdges
+          },
+          token
+        );
+        setWorkflow(updated);
+        setIsDirty(false);
+        if (onWorkflowSaved) {
+          onWorkflowSaved(updated);
+        }
+      }
+
+      const result = await workflowApi.executeWorkflow(workflow.id, token);
+      setExecutionResult(result);
+      setShowExecutionModal(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Execution failed';
+      setErrorMessage(msg);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
   // Back confirmation
   const handleBack = () => {
     if (isDirty) {
@@ -415,12 +464,37 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
 
           <button
             onClick={() => void handleSave()}
-            disabled={isSaving || !workflowName.trim()}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition disabled:opacity-50 shadow-md shadow-emerald-500/20"
+            disabled={isSaving || isExecuting || !workflowName.trim()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition disabled:opacity-50 shadow-md shadow-emerald-500/20"
           >
             <Save className="w-3.5 h-3.5" />
-            <span>Save Workflow</span>
+            <span>Save</span>
           </button>
+
+          <button
+            onClick={() => void handleExecute()}
+            disabled={isExecuting || isSaving || !workflow}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs transition disabled:opacity-50 shadow-md shadow-sky-500/20"
+            title="Execute workflow synchronously"
+          >
+            {isExecuting ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Play className="w-3.5 h-3.5 fill-current" />
+            )}
+            <span>{isExecuting ? 'Running...' : 'Run Workflow'}</span>
+          </button>
+
+          {executionResult && !isExecuting && (
+            <button
+              onClick={() => setShowExecutionModal(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition border border-slate-700"
+              title="View last execution result"
+            >
+              <span className={`w-2 h-2 rounded-full ${executionResult.status === 'SUCCESS' ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+              <span className="hidden xl:inline">Result</span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -538,6 +612,14 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
           />
         )}
       </div>
+
+      {/* Execution Result Modal (Phase 4) */}
+      {showExecutionModal && executionResult && (
+        <ExecutionResultModal
+          result={executionResult}
+          onClose={() => setShowExecutionModal(false)}
+        />
+      )}
     </div>
   );
 };

@@ -177,3 +177,27 @@ This document records the architectural and technical decisions made during the 
 * **Consequences**:
   - Positive: Full visual editing experience with zoom, pan, minimap, background grid, and unsaved changes tracking. Clean separation between UI presentation state and persisted workflow documents.
   - Trade-off: Requires maintaining coordinates and handles in the document model. Execution of graph nodes remains planned for Phase 4.
+
+---
+
+## Phase 4: Workflow Execution Engine
+
+### ADR-016: Synchronous In-Process Execution Engine, Kahn's Topological Sort, and Fail-Fast Strategy
+* **Date**: 2026-09-27
+* **Status**: Accepted
+* **Context**: Phase 4 requires executing saved workflows consisting of nodes and edges. The engine must validate the workflow definition, determine the correct execution order, execute supported nodes (`trigger`, `httpRequest`, `generic`), pass outputs from upstream to downstream nodes, and return structured execution outcomes.
+* **Decision**:
+  - **In-Process & Synchronous Execution**: The execution engine runs synchronously in-process (`POST /api/workflows/{id}/execute`) using the authenticated user identity. No asynchronous queues, Redis, Kafka, or background executor threads are used.
+  - **Graph Validation (7 Rules)**: Validate (1) non-null/non-empty workflow, (2) unique node IDs, (3) supported node types, (4) exactly one trigger node with 0 in-degree, (5) valid edge source and target node references, (6) acyclic graph topology, and (7) rejection of unknown node types.
+  - **Topological Execution Ordering**: Use Kahn's algorithm starting from the root trigger node to establish deterministic linear execution order across linear and branching graphs.
+  - **Node Executors**:
+    - `TriggerNodeExecutor`: Produces initial execution context (`trigger: "manual"`, timestamps, metadata).
+    - `HttpRequestNodeExecutor`: Executes real HTTP calls via Java 21's standard `java.net.http.HttpClient` with configurable 10s timeout, header support, and body publishers for GET, POST, PUT, DELETE, and PATCH. Differentiates transport failures (network/DNS/timeout/malformed URL) from completed HTTP responses with 4xx/5xx status codes.
+    - `GenericNodeExecutor`: Safe pass-through node preserving inputs and metadata without arbitrary code execution.
+  - **Data Flow Resolution**: Each node receives the output map of its upstream node(s). A single upstream node's output is passed directly; multiple upstream nodes are combined deterministically keyed by source node ID.
+  - **Fail-Fast Strategy**: If any node fails (status `FAILED`), downstream node execution is halted immediately. The overall workflow execution status is marked `FAILED` with error details and duration.
+  - **Ownership Enforcement**: Lookups use `findByIdAndUserId(workflowId, principal.id())`. Unauthorized or nonexistent executions return `404 Not Found`.
+  - **Deferral of Execution Persistence & Redis**: Execution results remain in-memory and return directly in the API response. MongoDB execution history persistence is deferred to Phase 5. Redis asynchronous task queues are deferred to Phase 7.
+* **Consequences**:
+  - Positive: High simplicity, zero external queue dependencies, deterministic testability (with JDK local `HttpServer`), robust multi-tenant ownership enforcement (`findByIdAndUserId`).
+  - Trade-off: Long-running or heavy workflows are constrained by HTTP request lifecycle until asynchronous workers (Phase 7) are introduced.

@@ -21,4 +21,12 @@ public class WebConfig implements WebMvcConfigurer {
                 .allowedHeaders("*")
                 .allowCredentials(true);
     }
+
+    @org.springframework.context.annotation.Bean
+    public java.net.http.HttpClient httpClient() {
+        return java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(10))
+                .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                .build();
+    }
 }

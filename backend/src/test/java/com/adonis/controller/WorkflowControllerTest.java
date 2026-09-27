@@ -49,6 +49,9 @@ class WorkflowControllerTest {
     private WorkflowService workflowService;
 
     @MockBean
+    private com.adonis.execution.WorkflowExecutionService executionService;
+
+    @MockBean
     private WorkflowRepository workflowRepository;
 
     @MockBean
@@ -393,5 +396,77 @@ class WorkflowControllerTest {
     void deleteWorkflow_ShouldReturn401WhenUnauthenticated() throws Exception {
         mockMvc.perform(delete("/api/workflows/wf-101"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // -------------------------------------------------------------
+    // EXECUTE WORKFLOW (POST /api/workflows/{id}/execute)
+    // -------------------------------------------------------------
+
+    @Test
+    void executeWorkflow_ShouldReturn200AndResultWhenAuthorized() throws Exception {
+        Instant now = Instant.now();
+        com.adonis.execution.WorkflowExecutionResult result = com.adonis.execution.WorkflowExecutionResult.success(
+                "exec-123",
+                "wf-101",
+                now,
+                now,
+                List.of(
+                        com.adonis.execution.NodeExecutionResult.success(
+                                "node-1",
+                                "trigger",
+                                now,
+                                now,
+                                Map.of("trigger", "manual")
+                        )
+                )
+        );
+
+        when(executionService.executeWorkflow("wf-101", "user-A-id")).thenReturn(result);
+
+        mockMvc.perform(post("/api/workflows/wf-101/execute")
+                        .header("Authorization", "Bearer " + userAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionId").value("exec-123"))
+                .andExpect(jsonPath("$.workflowId").value("wf-101"))
+                .andExpect(jsonPath("$.status").value("SUCCESS"))
+                .andExpect(jsonPath("$.nodes[0].nodeId").value("node-1"))
+                .andExpect(jsonPath("$.nodes[0].status").value("SUCCESS"));
+
+        verify(executionService).executeWorkflow("wf-101", "user-A-id");
+    }
+
+    @Test
+    void executeWorkflow_ShouldReturn404WhenWorkflowNotFoundOrNotOwned() throws Exception {
+        when(executionService.executeWorkflow("wf-unowned", "user-B-id"))
+                .thenThrow(new WorkflowNotFoundException("Workflow not found with id: wf-unowned"));
+
+        mockMvc.perform(post("/api/workflows/wf-unowned/execute")
+                        .header("Authorization", "Bearer " + userBToken))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404));
+
+        verify(executionService).executeWorkflow("wf-unowned", "user-B-id");
+    }
+
+    @Test
+    void executeWorkflow_ShouldReturn400WhenValidationFails() throws Exception {
+        when(executionService.executeWorkflow("wf-invalid", "user-A-id"))
+                .thenThrow(new com.adonis.exception.WorkflowValidationException("Workflow execution graph contains a cycle"));
+
+        mockMvc.perform(post("/api/workflows/wf-invalid/execute")
+                        .header("Authorization", "Bearer " + userAToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("Workflow execution graph contains a cycle"));
+
+        verify(executionService).executeWorkflow("wf-invalid", "user-A-id");
+    }
+
+    @Test
+    void executeWorkflow_ShouldReturn401WhenUnauthenticated() throws Exception {
+        mockMvc.perform(post("/api/workflows/wf-101/execute"))
+                .andExpect(status().isUnauthorized());
+
+        verify(executionService, never()).executeWorkflow(any(), any());
     }
 }

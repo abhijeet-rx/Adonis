@@ -16,21 +16,27 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-## 2. Current Architecture (Phase 3 Operational)
+## 2. Current Architecture (Phase 4 Operational)
 
-In Phase 3, the operational system topology provides an interactive visual workflow canvas integrated with the persistent workflow domain:
+In Phase 4, the operational system topology provides an interactive visual workflow canvas integrated with the persistent workflow domain and a synchronous, in-process workflow execution engine:
 
 ```text
 React (Vite + TypeScript + Tailwind + @xyflow/react)
    ├── Visual Workflow Builder (Canvas, MiniMap, Controls, Background)
    ├── Node Palette (Trigger, HTTP Request, Generic) & Node Config Drawer
+   ├── Run Workflow Action & Execution Results Modal
    └── Bidirectional Graph Adapter (workflowAdapter.ts)
    ↓ HTTP / JSON (Bearer JWT, CORS-enabled)
 Spring Boot REST API (Java 21, Spring Boot 3.3.4)
    ↓
 Spring Security + JWT (Stateless filter, BCrypt password encoder)
    ↓
-Service Layer (AuthService, UserService, WorkflowService)
+Service Layer (AuthService, UserService, WorkflowService, WorkflowExecutionService)
+   ↓
+Execution Engine (Kahn's Topological Sort, Fail-Fast In-Process Sequential Runner)
+   ├── WorkflowExecutionValidator (7-rule graph & trigger validation)
+   ├── WorkflowExecutionEngine (sequential execution & upstream output resolution)
+   └── NodeExecutors: TriggerNodeExecutor, HttpRequestNodeExecutor, GenericNodeExecutor
    ↓
 MongoDB (Spring Data MongoDB, 7.0 container)
    ├── Collection: users (unique index on lowercase email)
@@ -49,7 +55,7 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Protected User Profile API** | **Operational** (`GET /api/users/me`) | Phase 1 (Completed) |
 | **Workflow CRUD APIs** | **Operational** (`POST/GET/PUT/DELETE /api/workflows`) | Phase 2 (Completed) |
 | **React Flow Visual Canvas** | **Operational** (`@xyflow/react` v12 visual builder) | Phase 3 (Completed) |
-| **Workflow Execution Engine** | *NOT Implemented* | Phase 4 (Execution Engine) |
+| **Workflow Execution Engine** | **Operational** (Topological DAG, in-process, fail-fast) | Phase 4 (Completed) |
 | **Execution History & Logs** | *NOT Implemented* | Phase 5 (Execution History + Logs) |
 | **Retries & Failure Handling** | *NOT Implemented* | Phase 6 (Retries + Failure Handling) |
 | **Redis Asynchronous Workers** | *NOT Implemented* | Phase 7 (Redis Asynchronous Workers) |
@@ -59,7 +65,11 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |
 | **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |
 
-> **Explicit Boundary**: Workflow execution, DAG compilation, scheduling, Redis worker queues, AI integrations, and background runner processes are **NOT** part of Phase 3. Phase 3 strictly encompasses the visual graph canvas, node dragging/configuration, and visual state persistence.
+> **Explicit Boundary & Design Principles**:
+> - **In-Process & Synchronous**: In Phase 4, the execution engine runs synchronously in-process upon request. No asynchronous workers, job queues, Redis, Kafka, or background executor threads are used.
+> - **Fail-Fast Error Handling**: If any node fails during execution, execution immediately terminates. The failed node is recorded with its error, downstream nodes are skipped, and the overall execution status is set to `FAILED`.
+> - **Transient Execution Results**: Execution results are returned directly in the HTTP response (`POST /api/workflows/{id}/execute`) without being permanently persisted into MongoDB. Permanent audit history and execution logs are deferred to Phase 5.
+> - **Redis Deferral**: Redis and queue workers are intentionally deferred to Phase 7 to maintain a minimal, resilient architecture before introducing distributed asynchronous complexity.
 
 ---
 
@@ -90,7 +100,7 @@ Each workflow document in MongoDB (`workflows` collection) represents a persiste
 ```mermaid
 graph TD
     subgraph Client["Client Tier (Operational)"]
-        UI["React 19 + TypeScript SPA<br/>(Auth, Workflow CRUD & React Flow Canvas)"]
+        UI["React 19 + TypeScript SPA<br/>(Auth, Workflow CRUD, React Flow & Execution Inspector)"]
     end
 
     subgraph Gateway["API & Ingress Tier (Operational)"]
@@ -102,6 +112,9 @@ graph TD
         AUTH_SVC["AuthService (Register, Login, BCrypt)"]
         USER_SVC["UserService (Profile retrieval)"]
         WF_SVC["WorkflowService (CRUD & Ownership Scoping)"]
+        EXEC_SVC["WorkflowExecutionService (Graph Validation & Execution)"]
+        ENGINE["WorkflowExecutionEngine (Topological Sequential Runner)"]
+        VALIDATOR["WorkflowExecutionValidator (7-Rule DAG Validation)"]
     end
 
     subgraph Storage["Data Tier (Operational)"]
@@ -109,8 +122,8 @@ graph TD
     end
 
     subgraph Deferred["Deferred Subsystems (NOT Implemented)"]
-        ENGINE["Workflow Execution Engine (Planned Phase 4)"]
-        REDIS[("Redis Task Queue (Planned Phase 7)")]
+        HISTORY[("Execution History Persistence (Planned Phase 5)")]
+        REDIS[("Redis Task Queue & Workers (Planned Phase 7)")]
         AI["AI Provider Integrations (Planned Phase 9)"]
     end
 
@@ -119,9 +132,13 @@ graph TD
     AUTH --> AUTH_SVC
     AUTH --> USER_SVC
     AUTH --> WF_SVC
+    AUTH --> EXEC_SVC
+    EXEC_SVC --> VALIDATOR
+    EXEC_SVC --> ENGINE
     AUTH_SVC --> MONGO
     USER_SVC --> MONGO
     WF_SVC --> MONGO
+    EXEC_SVC --> MONGO
 ```
 
 ---
@@ -131,15 +148,16 @@ graph TD
 ```
 [Browser / React App] 
       │
-      ├── POST /api/auth/register    ──> Validates input, hashes password (BCrypt), persists User to MongoDB, returns JWT
-      ├── POST /api/auth/login       ──> Verifies credentials with BCrypt, returns JWT
-      ├── GET  /api/users/me         ──> Authenticated via Bearer JWT, extracts UserPrincipal, returns UserResponse
-      ├── POST /api/workflows        ──> Authenticated via JWT, binds userId = principal.id(), persists Workflow
-      ├── GET  /api/workflows        ──> Authenticated via JWT, queries findByUserId(principal.id())
-      ├── GET  /api/workflows/{id}   ──> Authenticated via JWT, queries findByIdAndUserId, returns 404 on cross-user
-      ├── PUT  /api/workflows/{id}   ──> Authenticated via JWT, updates mutable fields, refreshes updatedAt, returns 404 on cross-user
-      ├── DELETE /api/workflows/{id} ──> Authenticated via JWT, deletes own workflow, returns 204 (404 on cross-user)
-      └── GET  /api/health           ──> Public health diagnostic (Phase 0)
+      ├── POST /api/auth/register          ──> Validates input, hashes password (BCrypt), persists User to MongoDB, returns JWT
+      ├── POST /api/auth/login             ──> Verifies credentials with BCrypt, returns JWT
+      ├── GET  /api/users/me               ──> Authenticated via Bearer JWT, extracts UserPrincipal, returns UserResponse
+      ├── POST /api/workflows              ──> Authenticated via JWT, binds userId = principal.id(), persists Workflow
+      ├── GET  /api/workflows              ──> Authenticated via JWT, queries findByUserId(principal.id())
+      ├── GET  /api/workflows/{id}         ──> Authenticated via JWT, queries findByIdAndUserId, returns 404 on cross-user
+      ├── PUT  /api/workflows/{id}         ──> Authenticated via JWT, updates mutable fields, refreshes updatedAt, returns 404 on cross-user
+      ├── DELETE /api/workflows/{id}       ──> Authenticated via JWT, deletes own workflow, returns 204 (404 on cross-user)
+      ├── POST /api/workflows/{id}/execute ──> Authenticated via JWT, verifies ownership, validates DAG (7 rules), topologically executes nodes, returns WorkflowExecutionResult
+      └── GET  /api/health                 ──> Public health diagnostic (Phase 0)
 ```
 
 ---
@@ -149,10 +167,22 @@ graph TD
 ```
 backend/src/main/java/com/adonis/
 ├── AdonisApplication.java       # Application Bootstrap
-├── config/                      # Web MVC, CORS configuration
+├── config/                      # Web MVC, CORS, and HttpClient configuration
 ├── controller/                  # REST Controllers (HealthController, AuthController, UserController, WorkflowController)
 ├── dto/                         # Strongly-typed Java 21 Records (CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowResponse, etc.)
-├── exception/                   # Global exception handling (GlobalExceptionHandler, WorkflowNotFoundException, etc.)
+├── exception/                   # Global exception handling (GlobalExceptionHandler, WorkflowValidationException, etc.)
+├── execution/                   # Phase 4 Workflow Execution Engine
+│   ├── ExecutionContext.java            # Runtime thread-safe execution state
+│   ├── ExecutionStatus.java             # SUCCESS, FAILED status enum
+│   ├── GenericNodeExecutor.java         # Pass-through generic node executor
+│   ├── HttpRequestNodeExecutor.java     # JDK HttpClient executor for GET/POST/PUT/DELETE/PATCH
+│   ├── NodeExecutionResult.java         # Node execution output, duration, and error record
+│   ├── NodeExecutor.java                # Extensible node executor interface
+│   ├── TriggerNodeExecutor.java         # Starting trigger node executor
+│   ├── WorkflowExecutionEngine.java     # In-process sequential runner with fail-fast semantics
+│   ├── WorkflowExecutionResult.java     # Overall workflow execution outcome record
+│   ├── WorkflowExecutionService.java    # Ownership lookup and orchestration service
+│   └── WorkflowExecutionValidator.java  # 7-rule graph validation & Kahn's topological sort
 ├── model/                       # MongoDB Document Models (User, Workflow, WorkflowNode, WorkflowEdge, WorkflowStatus)
 ├── repository/                  # Spring Data MongoDB Repositories (UserRepository, WorkflowRepository)
 ├── security/                    # SecurityConfig, JwtService, JwtAuthenticationFilter, UserPrincipal

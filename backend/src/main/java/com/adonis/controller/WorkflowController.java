@@ -3,6 +3,8 @@ package com.adonis.controller;
 import com.adonis.dto.CreateWorkflowRequest;
 import com.adonis.dto.UpdateWorkflowRequest;
 import com.adonis.dto.WorkflowResponse;
+import com.adonis.execution.WorkflowExecutionResult;
+import com.adonis.execution.WorkflowExecutionService;
 import com.adonis.security.UserPrincipal;
 import com.adonis.service.WorkflowService;
 import jakarta.validation.Valid;
@@ -19,9 +21,11 @@ import java.util.List;
 public class WorkflowController {
 
     private final WorkflowService workflowService;
+    private final WorkflowExecutionService executionService;
 
-    public WorkflowController(WorkflowService workflowService) {
+    public WorkflowController(WorkflowService workflowService, WorkflowExecutionService executionService) {
         this.workflowService = workflowService;
+        this.executionService = executionService;
     }
 
     @PostMapping
@@ -66,6 +70,15 @@ public class WorkflowController {
         UserPrincipal principal = getAuthenticatedPrincipal(authentication);
         workflowService.deleteWorkflow(id, principal.id());
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/execute")
+    public ResponseEntity<WorkflowExecutionResult> executeWorkflow(
+            @PathVariable String id,
+            Authentication authentication) {
+        UserPrincipal principal = getAuthenticatedPrincipal(authentication);
+        WorkflowExecutionResult result = executionService.executeWorkflow(id, principal.id());
+        return ResponseEntity.ok(result);
     }
 
     private UserPrincipal getAuthenticatedPrincipal(Authentication authentication) {

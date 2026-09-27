@@ -48,6 +48,30 @@ export interface UpdateWorkflowRequest {
   edges?: WorkflowEdge[];
 }
 
+export type ExecutionStatus = 'SUCCESS' | 'FAILED';
+
+export interface NodeExecutionResult {
+  nodeId: string;
+  nodeType: string;
+  status: ExecutionStatus;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  output?: Record<string, unknown> | null;
+  error?: string | null;
+}
+
+export interface WorkflowExecutionResult {
+  executionId: string;
+  workflowId: string;
+  status: ExecutionStatus;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  nodes: NodeExecutionResult[];
+  error?: string | null;
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
 export const workflowApi = {
@@ -124,5 +148,20 @@ export const workflowApi = {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(errorData.message || `Failed to delete workflow (HTTP ${res.status})`);
     }
+  },
+
+  async executeWorkflow(id: string, token: string): Promise<WorkflowExecutionResult> {
+    const res = await fetch(`${API_BASE_URL}/api/workflows/${encodeURIComponent(id)}/execute`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json'
+      }
+    });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || `Failed to execute workflow (HTTP ${res.status})`);
+    }
+    return res.json();
   }
 };

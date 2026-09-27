@@ -8,9 +8,9 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 3 — React Flow Visual Workflow Builder** *(Completed)*
+**Phase 4 — Workflow Execution Engine** *(Completed)*
 
-This phase introduces an interactive React Flow visual workflow canvas (`@xyflow/react`), custom node components (`TriggerNode`, `HttpRequestNode`, `GenericNode`), an interactive node palette with drag-and-drop and click-to-add support, an in-memory node configuration drawer, unsaved changes dirty-state tracking, and bidirectional graph adapters persisting visual DAG definitions directly into MongoDB via the existing Phase 2 workflow APIs.
+This phase introduces the core workflow execution engine for Adonis. The engine takes a saved workflow, validates its structure (7 integrity rules including trigger count and cycle detection), determines deterministic topological execution order using Kahn's algorithm, executes supported nodes sequentially (`trigger`, `httpRequest` via standard Java `HttpClient`, and pass-through `generic`), passes data outputs from upstream to downstream nodes, implements fail-fast synchronous error handling, and returns structured execution results to the client. The visual workflow builder provides a seamless **Run Workflow** action and interactive execution results inspector.
 
 ---
 
@@ -40,6 +40,7 @@ This phase introduces an interactive React Flow visual workflow canvas (`@xyflow
 | `GET` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Retrieve specific workflow (returns 404 if not owned or nonexistent) |
 | `PUT` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Update workflow fields (name, description, status, nodes, edges) |
 | `DELETE` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Delete workflow by ID (returns 204 No Content) |
+| `POST` | `/api/workflows/{id}/execute` | Protected (`Bearer <token>`) | Synchronously validate and execute workflow in topological order |
 | `GET` | `/actuator/health` | Public | Spring Boot Actuator health metric |
 
 > **Workflow Ownership & Privacy**:
@@ -153,7 +154,7 @@ docker compose up --build
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0, Phase 1, Phase 2 & Phase 3 — Operational)**:
+- **Current (Phase 0, Phase 1, Phase 2, Phase 3 & Phase 4 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users` and `workflows` collections)
@@ -161,15 +162,17 @@ docker compose up --build
   - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`)
   - Workflow CRUD REST API (`POST`, `GET`, `GET {id}`, `PUT {id}`, `DELETE {id}`) with ownership-level query isolation
   - React Flow visual workflow builder (`@xyflow/react`) with custom nodes (Trigger, HTTP Request, Generic), handles, zoom/pan/minimap, node palette, configuration drawer, and dirty state management
-  - React 19 + TypeScript + Vite + Tailwind CSS frontend with authentication, workflow CRUD management, and visual workflow canvas
+  - Synchronous in-process workflow execution engine (`POST /api/workflows/{id}/execute`) with graph validation (7 integrity checks), Kahn's topological ordering, fail-fast behavior, data flow propagation, and structured node execution outcomes
+  - Node executors: `TriggerNodeExecutor` (manual execution context), `HttpRequestNodeExecutor` (real HTTP requests via standard Java `HttpClient` for GET/POST/PUT/DELETE/PATCH), and `GenericNodeExecutor` (safe pass-through)
+  - Interactive Run Workflow action with real-time progress spinner, execution drawer/modal with duration, status badges, and expandable node outputs
+  - React 19 + TypeScript + Vite + Tailwind CSS frontend with authentication, workflow CRUD management, visual canvas, and execution inspector
   - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, and `mongodb`
   - Automated GitHub Actions CI pipeline (backend test & frontend build)
 
-- **Planned Functionality (Phases 4–12)**:
-  - Workflow execution engine (Planned for Phase 4)
-  - Execution history & logs (Planned for Phase 5)
-  - Retries & failure handling (Planned for Phase 6)
-  - Redis asynchronous workers (Planned for Phase 7)
+- **Planned Functionality (Phases 5–12)**:
+  - Execution history & logs in MongoDB (Planned for Phase 5)
+  - Retries & failure handling policies (Planned for Phase 6)
+  - Redis asynchronous workers & queues (Planned for Phase 7)
   - Scheduling & webhooks (Planned for Phase 8)
   - AI nodes powered by Gemini/OpenAI (Planned for Phase 9)
   - Automated testing & Testcontainers (Planned for Phase 10)
@@ -184,7 +187,7 @@ docker compose up --build
 - [x] **Phase 1 — Authentication + MongoDB + User Management**
 - [x] **Phase 2 — Workflow CRUD**
 - [x] **Phase 3 — React Flow Visual Workflow Builder**
-- [ ] **Phase 4 — Workflow Execution Engine**
+- [x] **Phase 4 — Workflow Execution Engine**
 - [ ] **Phase 5 — Execution History + Logs**
 - [ ] **Phase 6 — Retries + Failure Handling**
 - [ ] **Phase 7 — Redis Asynchronous Workers**
