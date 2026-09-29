@@ -327,5 +327,49 @@ This document records the architectural and technical decisions made during the 
   - Positive: Zero risk of silent job loss under worker crashes; at-least-once delivery guarantee combined with MongoDB atomic idempotency prevents duplicate HTTP side effects; corrupted messages are quarantined without crashing the worker; deterministic test suite remains completely hermetic via `InMemoryExecutionQueue`.
   - Trade-off: Recovered `RUNNING` executions that exceed the stale timeout are marked `FAILED` rather than automatically re-executed, prioritizing idempotency and preventing duplicate external HTTP requests over speculative replay.
 
+---
+
+## Phase 7.1.1: Worker Lease & Stale Execution Hardening
+
+### ADR-022: Renewable Worker Ownership Leases, Background Heartbeats, and Safe Expired Lease Recovery
+* **Date**: 2026-09-29
+* **Status**: Accepted
+* **Context**:
+  In Phase 7.1, stale execution reconciliation relied on total elapsed execution time (`now - startedAt > WORKER_STALE_EXECUTION_TIMEOUT_MS`). Any legitimate workflow running longer than the configured timeout (e.g. slow external HTTP queries, batch operations, or long-running graphs) was prematurely marked `FAILED` by another worker inspecting pending messages, even when the original worker was completely healthy and actively executing the workflow.
+* **Decision**:
+  - **Rejection of Static Execution Timeouts**:
+    Total execution duration must NEVER determine whether an execution is abandoned or stale. A workflow running for 5 minutes, 20 minutes, or 2 hours is considered active as long as the worker responsible for it continuously renews its ownership lease.
+  - **Execution Ownership Lease Metadata**:
+    Extend `WorkflowExecution` with internal persistence-only fields:
+    - `workerId`: Unique runtime identity of the worker currently executing the workflow.
+    - `leaseUntil`: Expiration timestamp of the current worker's ownership lease.
+    - `lastHeartbeatAt`: Timestamp of the most recent successful heartbeat renewal.
+    These fields remain strictly internal to the persistence layer and are never leaked to frontend API responses (`ExecutionResponse`, `ExecutionSummaryResponse`).
+  - **Unique Worker Identity**:
+    Workers derive their identity from `REDIS_CONSUMER_NAME` / `adonis.worker.consumer-name`. If not explicitly configured, the worker automatically generates a unique runtime identity (`worker-<UUID>`) on startup, preventing identity collisions across concurrent application instances.
+  - **Atomic Lease Acquisition during QUEUED → RUNNING**:
+    During initial job claiming, `mongoTemplate.findAndModify` atomically transitions `QUEUED` to `RUNNING` while establishing the initial lease:
+    `WHERE _id == executionId AND status == QUEUED` → `SET status = RUNNING, startedAt = now(), workerId = currentWorkerId, leaseUntil = now() + leaseDurationMs, lastHeartbeatAt = now()`.
+  - **Lightweight Non-Blocking Heartbeat Renewal**:
+    While executing a workflow, a lightweight `ScheduledExecutorService` periodically renews the worker's lease every `WORKER_HEARTBEAT_INTERVAL_MS` (default 20,000ms, clamped to `leaseDuration / 3` if misconfigured). The heartbeat executes asynchronously without blocking workflow execution threads.
+  - **Ownership-Safe Lease Renewal**:
+    Lease renewal updates MongoDB conditionally:
+    `WHERE _id == executionId AND status == RUNNING AND workerId == currentWorkerId` → `SET leaseUntil = now() + leaseDurationMs, lastHeartbeatAt = now()`.
+    If the update matches 0 documents (`matchedCount == 0`), the worker has lost ownership (e.g., due to an extreme GC pause allowing another worker to acquire the lease). The worker immediately stops its heartbeat and flags ownership as lost, aborting subsequent terminal persistence and message acknowledgement to avoid overwriting state.
+    Transient MongoDB network errors during heartbeat are logged as warnings and retried on the next tick without immediately aborting the workflow.
+  - **Safe Expired Lease Recovery & Duplicate Side-Effect Prevention**:
+    When a worker claims or reclaims a message targeting an execution currently in `RUNNING` status:
+    - If `leaseUntil > now`: The lease is valid. The existing worker is actively executing. The message is skipped without re-execution, without failure marking, and without acknowledgement.
+    - If `leaseUntil <= now`: The lease has expired (the previous worker crashed or hung). Workers attempt an atomic takeover via `findAndModify`:
+      `WHERE _id == executionId AND status == RUNNING AND (leaseUntil <= now OR leaseUntil == null)` → `SET workerId = currentWorkerId, leaseUntil = now() + leaseDurationMs, lastHeartbeatAt = now()`.
+      Only the single winning worker that successfully acquires the expired lease transitions the execution to `FAILED` with an explicit diagnostic recovery message (`Execution lease expired (previous worker [%s] lost ownership or terminated); marked FAILED during recovery to prevent duplicate external side effects`), persists the record, and acknowledges (`XACK`) the message.
+  - **Tradeoff & Side-Effect Limitation**:
+    A long-running workflow is not considered stale based on total execution duration. Worker ownership is determined using a renewable lease.
+    The system does not guarantee exactly-once external side effects. A worker crash after an external side effect (e.g. HTTP POST to a third-party payment gateway or webhook) but before durable completion state can require replay or terminal failure depending on the recovery policy. Adonis chooses terminal failure with diagnostic logging to avoid duplicating non-idempotent external HTTP requests.
+* **Consequences**:
+  - Positive: Legitimate long-running workflows can run indefinitely as long as worker heartbeats succeed; worker crashes are reliably detected when leases expire; race conditions between multiple workers during takeover are prevented via atomic MongoDB operations; heartbeat threads are bounded and fully cleaned up upon execution completion or shutdown.
+  - Trade-off: Workflows interrupted by worker crash are marked `FAILED` rather than automatically resumed mid-graph, preserving strict idempotency against duplicate external side effects.
+
+
 
 

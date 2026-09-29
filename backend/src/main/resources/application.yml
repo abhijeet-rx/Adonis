@@ -23,7 +23,8 @@ adonis:
     consumer-name: ${REDIS_CONSUMER_NAME:}
     poll-timeout-ms: ${WORKER_POLL_TIMEOUT_MS:2000}
     pending-claim-idle-ms: ${WORKER_PENDING_CLAIM_IDLE_MS:60000}
-    stale-execution-timeout-ms: ${WORKER_STALE_EXECUTION_TIMEOUT_MS:300000}
+    lease-duration-ms: ${WORKER_LEASE_DURATION_MS:60000}
+    heartbeat-interval-ms: ${WORKER_HEARTBEAT_INTERVAL_MS:20000}
     queue-name: ${EXECUTION_QUEUE_NAME:adonis:execution:stream}
   queue:
     type: ${QUEUE_TYPE:redis}

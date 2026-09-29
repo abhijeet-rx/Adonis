@@ -367,19 +367,29 @@ backend/src/main/java/com/adonis/
 3. **Payload Minimalism (`ExecutionJob`)**:
    Queue messages contain only identifiers (`executionId`, `workflowId`, `userId`, `triggerType`, `queuedAt`). The full workflow definition is never put into Redis. The worker loads authoritative state from MongoDB, avoiding document stale-reads and payload bloat.
 4. **Delivery Guarantees & Idempotent Execution Claiming**:
-   Redis provides at-least-once message delivery, while MongoDB atomic execution claiming provides idempotent workflow execution and prevents duplicate execution across workers. Workers execute an atomic `findAndModify` query in MongoDB (`WHERE _id == executionId AND status == QUEUED` -> `SET status = RUNNING, startedAt = now()`). Only one worker can claim the execution; any duplicate delivery is safely discarded without re-running nodes.
+   Redis provides at-least-once message delivery, while MongoDB atomic execution claiming provides idempotent workflow execution and prevents duplicate execution across workers. Workers execute an atomic `findAndModify` query in MongoDB (`WHERE _id == executionId AND status == QUEUED` -> `SET status = RUNNING, startedAt = now(), workerId = currentWorkerId, leaseUntil = now() + leaseDurationMs, lastHeartbeatAt = now()`). Only one worker can claim the execution; any duplicate delivery is safely discarded without re-running nodes.
 5. **Strict Acknowledgement Timing (`XACK`)**:
    Messages are acknowledged via `XACK` **only after** the execution record has been successfully persisted to MongoDB in a terminal state (`SUCCESS` or `FAILED`). If database persistence fails, the message remains unacknowledged in the consumer group's Pending Entries List (PEL) for subsequent recovery.
 6. **Worker Crash Recovery**:
    When a worker crashes mid-execution, unacknowledged messages remain in the consumer group's Pending Entries List (PEL). Healthy workers periodically inspect pending entries (`XPENDING`) and reclaim stale unacknowledged messages via `XCLAIM` when their idle duration exceeds `WORKER_PENDING_CLAIM_IDLE_MS`.
-7. **Stale RUNNING Execution Reconciliation**:
-   If a recovered message targets an execution already in `RUNNING` status, workers inspect `startedAt`. If elapsed time exceeds `WORKER_STALE_EXECUTION_TIMEOUT_MS`, the execution is transitioned to `FAILED` with a descriptive message and acknowledged, preventing duplicate external HTTP side effects.
-8. **Poison Pill Quarantine**:
+7. **Renewable Worker Ownership Lease & Heartbeat (Phase 7.1.1)**:
+   > A long-running workflow is not considered stale based on total execution duration. Worker ownership is determined using a renewable lease.
+   
+   Executing workers periodically renew `leaseUntil` and `lastHeartbeatAt` via a non-blocking background `ScheduledExecutorService` every `WORKER_HEARTBEAT_INTERVAL_MS` (default 20,000ms) with a lease validity of `WORKER_LEASE_DURATION_MS` (default 60,000ms). Heartbeat updates are ownership-safe:
+   `WHERE _id == executionId AND status == RUNNING AND workerId == currentWorkerId` -> `SET leaseUntil = now() + leaseDurationMs, lastHeartbeatAt = now()`.
+   If the update matches 0 documents, the worker has lost ownership and immediately halts heartbeats and persistence.
+8. **Safe Expired Lease Recovery & Side-Effect Limitation**:
+   When a worker claims or reclaims a message for an execution already in `RUNNING` status:
+   - If `leaseUntil > now`: The lease is actively held. The worker skips processing without executing or ACKing.
+   - If `leaseUntil <= now`: The lease has expired (prior worker crashed or terminated). An atomic takeover is executed (`findAndModify` where `leaseUntil <= now`). The winning worker marks the execution `FAILED` with a diagnostic recovery message to prevent duplicate side effects, persists the record, and acknowledges the message (`XACK`).
+   
+   > The system does not guarantee exactly-once external side effects. A worker crash after an external side effect but before durable completion state can require replay or terminal failure depending on the recovery policy.
+9. **Poison Pill Quarantine**:
    Malformed or unparseable messages are moved to a quarantine dead-letter stream (`adonis:execution:stream:dlq`) and acknowledged from the main stream, preventing poison-pill infinite loops while preserving records for inspection.
-9. **Fail-Safe Queue Submission**:
-   If MongoDB execution record creation succeeds but Redis enqueueing throws an exception, the system catches the error, transitions the execution record to `FAILED` with a sanitized message, and returns HTTP 500 without leaking Redis internals or leaving the execution stuck in `QUEUED`.
-10. **Graceful Shutdown**:
-    `ExecutionWorker` implements Spring's `SmartLifecycle`. On shutdown, it ceases polling, allows active executions to complete cleanly, and avoids corrupting execution state.
-11. **Frontend Asynchronous Polling**:
+10. **Fail-Safe Queue Submission**:
+    If MongoDB execution record creation succeeds but Redis enqueueing throws an exception, the system catches the error, transitions the execution record to `FAILED` with a sanitized message, and returns HTTP 500 without leaking Redis internals or leaving the execution stuck in `QUEUED`.
+11. **Graceful Shutdown**:
+    `ExecutionWorker` implements Spring's `SmartLifecycle`. On shutdown, it ceases polling, shuts down the heartbeat scheduler, allows active executions to complete cleanly, and avoids corrupting execution state.
+12. **Frontend Asynchronous Polling**:
     When the user runs a workflow, the API responds with `202 Accepted`. The UI displays `QUEUED` immediately, triggers an execution history refresh, and polls `/api/executions/{id}` every 1.5 seconds until terminal state (`SUCCESS` or `FAILED`), at which point polling stops cleanly.
 

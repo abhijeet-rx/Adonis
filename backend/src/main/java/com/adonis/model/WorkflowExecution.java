@@ -46,6 +46,13 @@ public class WorkflowExecution {
 
     private String error;
 
+    private String workerId;
+
+    @Indexed
+    private Instant leaseUntil;
+
+    private Instant lastHeartbeatAt;
+
     public WorkflowExecution() {
     }
 
@@ -58,6 +65,13 @@ public class WorkflowExecution {
     public WorkflowExecution(String id, String workflowId, String userId, ExecutionStatus status,
                              String triggerType, Instant queuedAt, Instant startedAt, Instant completedAt,
                              Long durationMs, List<NodeExecution> nodeExecutions, String error) {
+        this(id, workflowId, userId, status, triggerType, queuedAt, startedAt, completedAt, durationMs, nodeExecutions, error, null, null, null);
+    }
+
+    public WorkflowExecution(String id, String workflowId, String userId, ExecutionStatus status,
+                             String triggerType, Instant queuedAt, Instant startedAt, Instant completedAt,
+                             Long durationMs, List<NodeExecution> nodeExecutions, String error,
+                             String workerId, Instant leaseUntil, Instant lastHeartbeatAt) {
         this.id = id;
         this.workflowId = workflowId;
         this.userId = userId;
@@ -69,6 +83,9 @@ public class WorkflowExecution {
         this.durationMs = durationMs;
         this.nodeExecutions = nodeExecutions != null ? new ArrayList<>(nodeExecutions) : new ArrayList<>();
         this.error = SecretRedactor.redactString(error);
+        this.workerId = workerId;
+        this.leaseUntil = leaseUntil;
+        this.lastHeartbeatAt = lastHeartbeatAt;
     }
 
     public static WorkflowExecution queued(String workflowId, String userId, String triggerType) {
@@ -84,6 +101,9 @@ public class WorkflowExecution {
                 null,
                 null,
                 new ArrayList<>(),
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -101,16 +121,26 @@ public class WorkflowExecution {
                 null,
                 null,
                 new ArrayList<>(),
+                null,
+                null,
+                null,
                 null
         );
     }
 
     public void markRunning(Instant startedAt) {
+        markRunning(startedAt, null, null);
+    }
+
+    public void markRunning(Instant startedAt, String workerId, Instant leaseUntil) {
         if (this.status != ExecutionStatus.QUEUED) {
             throw new IllegalStateException("Cannot transition to RUNNING from " + this.status);
         }
         this.status = ExecutionStatus.RUNNING;
         this.startedAt = startedAt != null ? startedAt : Instant.now();
+        this.workerId = workerId;
+        this.leaseUntil = leaseUntil;
+        this.lastHeartbeatAt = this.startedAt;
     }
 
     public void markQueueFailed(String errorMessage) {
@@ -118,6 +148,7 @@ public class WorkflowExecution {
         this.completedAt = Instant.now();
         this.durationMs = 0L;
         this.error = SecretRedactor.redactString(errorMessage != null ? errorMessage : "Failed to queue execution");
+        this.leaseUntil = null;
     }
 
     public void markSuccess(Instant completedAt, List<NodeExecution> nodes) {
@@ -126,6 +157,7 @@ public class WorkflowExecution {
         this.durationMs = (this.startedAt != null) ? Duration.between(this.startedAt, this.completedAt).toMillis() : 0L;
         this.nodeExecutions = nodes != null ? new ArrayList<>(nodes) : new ArrayList<>();
         this.error = null;
+        this.leaseUntil = null;
     }
 
     public void markFailed(Instant completedAt, List<NodeExecution> nodes, String errorMessage) {
@@ -134,6 +166,7 @@ public class WorkflowExecution {
         this.durationMs = (this.startedAt != null) ? Duration.between(this.startedAt, this.completedAt).toMillis() : 0L;
         this.nodeExecutions = nodes != null ? new ArrayList<>(nodes) : new ArrayList<>();
         this.error = SecretRedactor.redactString(errorMessage != null ? errorMessage : "Workflow execution failed");
+        this.leaseUntil = null;
     }
 
     public String getId() {
@@ -222,5 +255,29 @@ public class WorkflowExecution {
 
     public void setError(String error) {
         this.error = SecretRedactor.redactString(error);
+    }
+
+    public String getWorkerId() {
+        return workerId;
+    }
+
+    public void setWorkerId(String workerId) {
+        this.workerId = workerId;
+    }
+
+    public Instant getLeaseUntil() {
+        return leaseUntil;
+    }
+
+    public void setLeaseUntil(Instant leaseUntil) {
+        this.leaseUntil = leaseUntil;
+    }
+
+    public Instant getLastHeartbeatAt() {
+        return lastHeartbeatAt;
+    }
+
+    public void setLastHeartbeatAt(Instant lastHeartbeatAt) {
+        this.lastHeartbeatAt = lastHeartbeatAt;
     }
 }

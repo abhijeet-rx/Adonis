@@ -8,9 +8,9 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 7 — Redis Asynchronous Workers** *(Completed)*
+**Phase 7.1.1 — Worker Lease & Stale Execution Hardening** *(Completed)*
 
-This phase introduces an asynchronous, distributed-capable workflow execution architecture powered by Redis 7 and Spring Data Redis. The REST API execution endpoint (`POST /api/workflows/{id}/execute`) no longer blocks the HTTP request thread while running workflow graphs. Instead, it validates workflow graph structure upfront, generates an authoritative execution record in MongoDB with status `QUEUED`, enqueues a lightweight `ExecutionJob` message (`executionId`, `workflowId`, `userId`, `triggerType`, `queuedAt`) to the Redis queue (`RPUSH`), and immediately returns `202 Accepted` to the caller. Background worker processes (`ExecutionWorker`) poll jobs from the queue (`BLPOP` / `leftPop`), atomically claim the job from `QUEUED` to `RUNNING` via MongoDB `findAndModify` to enforce idempotency and prevent duplicate executions across concurrent workers, invoke the existing, unchanged `WorkflowExecutionEngine` (preserving all Phase 6 retry policies, failure classification, exponential backoff, attempt tracking, and Phase 5.1 secret redaction), and persist final `SUCCESS` or `FAILED` outcomes with granular node logs to MongoDB. If Redis enqueuing fails, the execution record transitions safely to `FAILED` with sanitized messaging to prevent permanently stuck `QUEUED` records. The frontend receives `202 Accepted`, displays immediate `QUEUED` status in modal and history views, and utilizes controlled polling (every 1.5s) until terminal execution state (`SUCCESS` or `FAILED`).
+This phase hardens Adonis against premature timeout failures on long-running workflows by replacing static elapsed-time stale detection with a renewable execution ownership lease mechanism. Workers establish an ownership lease (`workerId`, `leaseUntil`, `lastHeartbeatAt`) when atomically claiming an execution from `QUEUED` to `RUNNING` via MongoDB `findAndModify`. A non-blocking background heartbeat scheduler periodically renews the lease every `WORKER_HEARTBEAT_INTERVAL_MS` (default 20s) with a lease validity of `WORKER_LEASE_DURATION_MS` (default 60s). Heartbeat updates are ownership-safe (`WHERE _id == executionId AND status == RUNNING AND workerId == currentWorkerId`), ensuring workers immediately halt heartbeats and terminal persistence if ownership was lost. Legitimate long-running workflows remain active indefinitely without premature failure as long as heartbeats succeed. If a worker terminates or crashes, other workers safely detect expired leases (`leaseUntil <= now`), atomically acquire ownership, transition the execution to `FAILED` with diagnostic recovery details, and acknowledge the Redis Streams message (`XACK`) to prevent duplicate external HTTP side effects.
 
 ---
 
@@ -172,18 +172,19 @@ docker compose up --build -d
 | `REDIS_PORT` | `6379` | Redis server TCP port |
 | `REDIS_STREAM_NAME` | `adonis:execution:stream` | Redis Stream key name for execution jobs |
 | `REDIS_CONSUMER_GROUP` | `adonis-workers` | Redis consumer group name for worker coordination |
-| `REDIS_CONSUMER_NAME` | `worker-<uuid>` | Unique worker consumer name in the consumer group |
+| `REDIS_CONSUMER_NAME` | `worker-<uuid>` | Unique worker runtime identity in the consumer group |
 | `WORKER_ENABLED` | `true` | Toggle execution worker polling loop (set `false` in tests) |
 | `WORKER_POLL_TIMEOUT_MS` | `2000` | Stream read block timeout (`XREADGROUP`) in milliseconds |
 | `WORKER_PENDING_CLAIM_IDLE_MS` | `60000` | Minimum idle time before unacknowledged pending messages are reclaimed from crashed workers |
-| `WORKER_STALE_EXECUTION_TIMEOUT_MS` | `300000` | Stale `RUNNING` execution timeout beyond which abandoned executions are marked `FAILED` to prevent duplicate side effects |
+| `WORKER_LEASE_DURATION_MS` | `60000` | Ownership lease duration in milliseconds for active workers |
+| `WORKER_HEARTBEAT_INTERVAL_MS` | `20000` | Lease heartbeat renewal interval in milliseconds (< lease duration) |
 | `QUEUE_TYPE` | `redis` | Queue backend provider (`redis` for production, `in-memory` for tests) |
 
 ---
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0 through Phase 7.1 — Operational)**:
+- **Current (Phase 0 through Phase 7.1.1 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users`, `workflows`, and `workflow_executions` collections)
@@ -196,10 +197,12 @@ docker compose up --build -d
   - Fail-safe queue submission: gracefully transitions execution record to `FAILED` with sanitized messaging if Redis enqueuing fails, preventing permanently stuck `QUEUED` records
   - Queue abstraction: `ExecutionQueue` interface with `RedisExecutionQueue` (production) and `InMemoryExecutionQueue` (test isolation)
   - Autonomous `ExecutionWorker` process implementing Spring's `SmartLifecycle` for graceful shutdown
-  - Redis provides at-least-once message delivery, while MongoDB atomic execution claiming (`findAndModify`: `QUEUED` → `RUNNING`) provides idempotent workflow execution and prevents duplicate execution across workers
+  - At-least-once message delivery via Redis Streams combined with MongoDB atomic execution claiming (`findAndModify`: `QUEUED` → `RUNNING`) establishing initial worker lease
   - Explicit message acknowledgement (`XACK`) executed strictly after terminal execution state (`SUCCESS` or `FAILED`) is safely persisted to MongoDB
-  - Worker crash recovery: automated reclamation of unacknowledged pending messages from the consumer group's Pending Entries List (PEL)
-  - Stale `RUNNING` execution reconciliation: timeout-based detection transitions abandoned executions to `FAILED`, preventing duplicate external HTTP side effects
+  - Worker crash recovery: automated reclamation of unacknowledged pending messages from the consumer group's Pending Entries List (PEL) via `XCLAIM`
+  - Renewable execution ownership lease: workers periodically renew `leaseUntil` and `lastHeartbeatAt` via a background heartbeat scheduler. A long-running workflow is not considered stale based on total execution duration. Worker ownership is determined using a renewable lease.
+  - Ownership-safe lease renewals: conditional MongoDB update ensures workers only renew leases they still own, halting heartbeats immediately if ownership is lost
+  - Expired lease recovery: workers atomically acquire expired leases (`leaseUntil <= now`). Winning worker marks execution `FAILED` with recovery diagnostics and ACKs message, preventing duplicate side effects. The system does not guarantee exactly-once external side effects. A worker crash after an external side effect but before durable completion state can require replay or terminal failure depending on the recovery policy.
   - Safe malformed message quarantine: corrupted stream entries are moved to `adonis:execution:stream:dlq` and acknowledged to prevent poison-pill infinite loops
   - Workflow execution engine: deterministic topological sort, fail-fast behavior, data flow propagation, and structured node execution outcomes
   - Node executors: `TriggerNodeExecutor` (manual execution context), `HttpRequestNodeExecutor` (real HTTP requests via standard Java `HttpClient` for GET/POST/PUT/DELETE/PATCH), and `GenericNodeExecutor` (safe pass-through)
@@ -236,6 +239,7 @@ docker compose up --build -d
 - [x] **Phase 6 — Retries + Failure Handling**
 - [x] **Phase 7 — Redis Asynchronous Workers**
 - [x] **Phase 7.1 — Redis Worker Reliability Hardening**
+- [x] **Phase 7.1.1 — Fix Stale RUNNING Execution Handling**
 - [ ] **Phase 8 — Scheduling + Webhooks**
 - [ ] **Phase 9 — AI Nodes**
 - [ ] **Phase 10 — Automated Testing + Testcontainers**

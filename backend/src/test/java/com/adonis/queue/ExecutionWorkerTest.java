@@ -12,6 +12,7 @@ import com.adonis.repository.WorkflowRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
@@ -85,11 +86,13 @@ class ExecutionWorkerTest {
     }
 
     @Test
-    void processJob_AlreadyRunning_NotStale_SkipsWithoutExecutingOrAcknowledging() {
-        // Started 10 seconds ago (well within 60s timeout)
+    void processJob_AlreadyRunning_ValidLease_SkipsWithoutExecutingOrAcknowledging() {
+        // Started 10 seconds ago with a valid lease until 50 seconds in the future
         Instant recentStart = Instant.now().minus(10, ChronoUnit.SECONDS);
         WorkflowExecution exec = new WorkflowExecution("exec-running", "wf-1", "user-1",
                 ExecutionStatus.RUNNING, "manual", recentStart, null, null, List.of(), null);
+        exec.setWorkerId("worker-active");
+        exec.setLeaseUntil(Instant.now().plus(50, ChronoUnit.SECONDS));
         when(executionRepository.findById("exec-running")).thenReturn(Optional.of(exec));
 
         QueuedJobMessage message = new QueuedJobMessage("msg-2",
@@ -104,12 +107,47 @@ class ExecutionWorkerTest {
     }
 
     @Test
-    void processJob_AlreadyRunning_Stale_MarksFailedAndAcknowledgesToPreventDuplicateSideEffects() {
-        // Started 5 minutes ago (well past 60s stale timeout)
+    void processJob_ActiveLongRunningWorkflow_ValidLease_NotFailedAndNotReExecuted() {
+        // Critical test: Workflow started 15 minutes ago (longer than old 5-minute timeout),
+        // but owner worker is actively renewing its lease (leaseUntil is 40 seconds in the future)
+        Instant longAgoStart = Instant.now().minus(15, ChronoUnit.MINUTES);
+        WorkflowExecution exec = new WorkflowExecution("exec-long-running", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", longAgoStart, null, null, List.of(), null);
+        exec.setWorkerId("worker-active-long");
+        exec.setLeaseUntil(Instant.now().plus(40, ChronoUnit.SECONDS));
+        when(executionRepository.findById("exec-long-running")).thenReturn(Optional.of(exec));
+
+        QueuedJobMessage message = new QueuedJobMessage("msg-long-running",
+                new ExecutionJob("exec-long-running", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
+
+        // MUST NOT be marked failed, MUST NOT re-execute, MUST NOT ACK
+        assertFalse(result);
+        assertEquals(ExecutionStatus.RUNNING, exec.getStatus());
+        verify(executionRepository, never()).save(any());
+        verify(queue, never()).acknowledge(anyString());
+        verify(mongoTemplate, never()).findAndModify(any(), any(), any(), eq(WorkflowExecution.class));
+        verify(engine, never()).execute(any(), any(), any(), any());
+    }
+
+    @Test
+    void processJob_AlreadyRunning_ExpiredLease_AtomicTakeoverWins_MarksFailedAndAcknowledges() {
+        // Started 5 minutes ago with expired lease (lease expired 30 seconds ago)
         Instant staleStart = Instant.now().minus(300, ChronoUnit.SECONDS);
         WorkflowExecution exec = new WorkflowExecution("exec-stale", "wf-1", "user-1",
                 ExecutionStatus.RUNNING, "manual", staleStart, null, null, List.of(), null);
+        exec.setWorkerId("worker-crashed");
+        exec.setLeaseUntil(Instant.now().minus(30, ChronoUnit.SECONDS));
         when(executionRepository.findById("exec-stale")).thenReturn(Optional.of(exec));
+
+        // Atomic takeover succeeds
+        WorkflowExecution acquired = new WorkflowExecution("exec-stale", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", staleStart, null, null, List.of(), null);
+        acquired.setWorkerId("test-worker");
+        acquired.setLeaseUntil(Instant.now().plus(60, ChronoUnit.SECONDS));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(WorkflowExecution.class)))
+                .thenReturn(acquired);
 
         QueuedJobMessage message = new QueuedJobMessage("msg-stale",
                 new ExecutionJob("exec-stale", "wf-1", "user-1", "manual", Instant.now()));
@@ -117,14 +155,129 @@ class ExecutionWorkerTest {
         boolean result = worker.processJob(message);
 
         assertFalse(result);
-        // Marked FAILED in repository
-        assertEquals(ExecutionStatus.FAILED, exec.getStatus());
-        assertTrue(exec.getError().contains("Execution timed out or processing worker terminated"));
-        verify(executionRepository).save(exec);
+        // Marked FAILED in repository with diagnostic reason
+        assertEquals(ExecutionStatus.FAILED, acquired.getStatus());
+        assertTrue(acquired.getError().contains("Execution lease expired"));
+        assertTrue(acquired.getError().contains("worker-crashed"));
+        verify(executionRepository).save(acquired);
         // Acknowledged from Redis stream
         verify(queue).acknowledge("msg-stale");
         // No duplicate node execution attempted!
         verify(engine, never()).execute(any(), any(), any(), any());
+    }
+
+    @Test
+    void processJob_AlreadyRunning_ExpiredLease_AtomicTakeoverLosesRace_DoesNothing() {
+        // Lease expired, but another worker races and claims it first
+        WorkflowExecution exec = new WorkflowExecution("exec-stale-race", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now().minus(300, ChronoUnit.SECONDS), null, null, List.of(), null);
+        exec.setWorkerId("worker-crashed");
+        exec.setLeaseUntil(Instant.now().minus(30, ChronoUnit.SECONDS));
+        when(executionRepository.findById("exec-stale-race")).thenReturn(Optional.of(exec));
+
+        // findAndModify returns null when another worker raced and took over
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(WorkflowExecution.class)))
+                .thenReturn(null);
+
+        QueuedJobMessage message = new QueuedJobMessage("msg-stale-race",
+                new ExecutionJob("exec-stale-race", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
+
+        assertFalse(result);
+        verify(executionRepository, never()).save(any());
+        verify(queue, never()).acknowledge("msg-stale-race");
+        verify(engine, never()).execute(any(), any(), any(), any());
+    }
+
+    @Test
+    void processJob_LeaseAcquisition_SetsWorkerIdAndLeaseMetadata() {
+        WorkflowExecution queuedExec = WorkflowExecution.queued("wf-1", "user-1", "manual");
+        queuedExec.setId("exec-lease");
+        when(executionRepository.findById("exec-lease")).thenReturn(Optional.of(queuedExec));
+
+        WorkflowExecution runningExec = new WorkflowExecution("exec-lease", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now(), null, null, List.of(), null);
+        runningExec.setWorkerId("test-worker");
+        runningExec.setLeaseUntil(Instant.now().plus(60, ChronoUnit.SECONDS));
+
+        ArgumentCaptor<Update> updateCaptor = ArgumentCaptor.forClass(Update.class);
+        when(mongoTemplate.findAndModify(any(Query.class), updateCaptor.capture(), any(FindAndModifyOptions.class), eq(WorkflowExecution.class)))
+                .thenReturn(runningExec);
+
+        WorkflowNode node = new WorkflowNode("node-1", "trigger", Map.of());
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, null, List.of(node), List.of(), null, null);
+        when(workflowRepository.findById("wf-1")).thenReturn(Optional.of(workflow));
+        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node));
+        when(engine.execute(any(), any(), any(), any())).thenReturn(WorkflowExecutionResult.success(
+                "exec-lease", "wf-1", Instant.now().minusMillis(10), Instant.now(), List.of()
+        ));
+
+        QueuedJobMessage message = new QueuedJobMessage("msg-lease",
+                new ExecutionJob("exec-lease", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
+
+        assertTrue(result);
+        Update capturedUpdate = updateCaptor.getValue();
+        org.bson.Document updateDoc = capturedUpdate.getUpdateObject();
+        org.bson.Document setDoc = (org.bson.Document) updateDoc.get("$set");
+        assertNotNull(setDoc);
+        assertEquals(ExecutionStatus.RUNNING, setDoc.get("status"));
+        assertEquals("test-worker", setDoc.get("workerId"));
+        assertNotNull(setDoc.get("leaseUntil"));
+        assertNotNull(setDoc.get("lastHeartbeatAt"));
+        assertNotNull(setDoc.get("startedAt"));
+    }
+
+    @Test
+    void renewLease_ActiveExecution_ExtendsLeaseUntilAndHeartbeat() {
+        com.mongodb.client.result.UpdateResult mockResult = mock(com.mongodb.client.result.UpdateResult.class);
+        when(mockResult.getMatchedCount()).thenReturn(1L);
+
+        ArgumentCaptor<Query> queryCaptor = ArgumentCaptor.forClass(Query.class);
+        ArgumentCaptor<Update> updateCaptor = ArgumentCaptor.forClass(Update.class);
+        when(mongoTemplate.updateFirst(queryCaptor.capture(), updateCaptor.capture(), eq(WorkflowExecution.class)))
+                .thenReturn(mockResult);
+
+        boolean renewed = worker.renewLease("exec-renew-1");
+
+        assertTrue(renewed);
+        Query capturedQuery = queryCaptor.getValue();
+        org.bson.Document queryDoc = capturedQuery.getQueryObject();
+        assertEquals("exec-renew-1", queryDoc.get("_id"));
+        assertEquals(ExecutionStatus.RUNNING, queryDoc.get("status"));
+        assertEquals("test-worker", queryDoc.get("workerId"));
+
+        Update capturedUpdate = updateCaptor.getValue();
+        org.bson.Document setDoc = (org.bson.Document) capturedUpdate.getUpdateObject().get("$set");
+        assertNotNull(setDoc.get("leaseUntil"));
+        assertNotNull(setDoc.get("lastHeartbeatAt"));
+    }
+
+    @Test
+    void renewLease_OwnershipSafety_FailsWhenWorkerDoesNotOwnExecution() {
+        // When the worker does not own the execution, matchedCount = 0
+        com.mongodb.client.result.UpdateResult mockResult = mock(com.mongodb.client.result.UpdateResult.class);
+        when(mockResult.getMatchedCount()).thenReturn(0L);
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(WorkflowExecution.class)))
+                .thenReturn(mockResult);
+
+        boolean renewed = worker.renewLease("exec-not-owned");
+
+        // Renewal must fail safely
+        assertFalse(renewed);
+    }
+
+    @Test
+    void renewLease_TransientMongoFailure_ToleratedWithoutThrowing() {
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(WorkflowExecution.class)))
+                .thenThrow(new RuntimeException("MongoDB transient network glitch"));
+
+        // Must not throw an unhandled exception
+        boolean renewed = worker.renewLease("exec-glitch");
+
+        assertFalse(renewed);
     }
 
     @Test
@@ -366,5 +519,93 @@ class ExecutionWorkerTest {
         verify(queue).claimPending(any(java.time.Duration.class), eq(10));
         verify(executionRepository).save(runningExec);
         verify(queue).acknowledge("rec-1");
+    }
+
+    @Test
+    void twoWorkers_ConcurrentTakeover_OnlyOneWinsAndMarksFailed() {
+        ExecutionWorker workerA = new ExecutionWorker(queue, workflowRepository, executionRepository, validator, engine, mongoTemplate,
+                false, 2000L, 10000L, 60000L, 20000L, "worker-A");
+        ExecutionWorker workerB = new ExecutionWorker(queue, workflowRepository, executionRepository, validator, engine, mongoTemplate,
+                false, 2000L, 10000L, 60000L, 20000L, "worker-B");
+
+        WorkflowExecution staleExec = new WorkflowExecution("exec-concurrent-stale", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now().minus(300, ChronoUnit.SECONDS), null, null, List.of(), null);
+        staleExec.setWorkerId("worker-dead");
+        staleExec.setLeaseUntil(Instant.now().minus(20, ChronoUnit.SECONDS));
+
+        when(executionRepository.findById("exec-concurrent-stale")).thenReturn(Optional.of(staleExec));
+
+        WorkflowExecution acquiredByA = new WorkflowExecution("exec-concurrent-stale", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now().minus(300, ChronoUnit.SECONDS), null, null, List.of(), null);
+        acquiredByA.setWorkerId("worker-A");
+        acquiredByA.setLeaseUntil(Instant.now().plus(60, ChronoUnit.SECONDS));
+
+        // workerA succeeds in findAndModify; workerB gets null
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(WorkflowExecution.class)))
+                .thenReturn(acquiredByA)
+                .thenReturn(null);
+
+        QueuedJobMessage msgA = new QueuedJobMessage("msg-takeover-A",
+                new ExecutionJob("exec-concurrent-stale", "wf-1", "user-1", "manual", Instant.now()));
+        QueuedJobMessage msgB = new QueuedJobMessage("msg-takeover-B",
+                new ExecutionJob("exec-concurrent-stale", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean resA = workerA.processJob(msgA);
+        boolean resB = workerB.processJob(msgB);
+
+        // workerA processed the recovery
+        assertFalse(resA);
+        assertEquals(ExecutionStatus.FAILED, acquiredByA.getStatus());
+        verify(executionRepository, times(1)).save(acquiredByA);
+        verify(queue).acknowledge("msg-takeover-A");
+
+        // workerB was safely locked out
+        assertFalse(resB);
+        verify(queue, never()).acknowledge("msg-takeover-B");
+    }
+
+    @Test
+    void oldWorker_HeartbeatAfterTakeover_FailsAndDoesNotOverwriteTakeoverState() {
+        ExecutionWorker workerA = new ExecutionWorker(queue, workflowRepository, executionRepository, validator, engine, mongoTemplate,
+                false, 2000L, 10000L, 60000L, 20000L, "worker-A");
+
+        // When workerA attempts to renew lease, MongoDB query matches 0 documents because workerId is now worker-B
+        com.mongodb.client.result.UpdateResult zeroMatched = mock(com.mongodb.client.result.UpdateResult.class);
+        when(zeroMatched.getMatchedCount()).thenReturn(0L);
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(WorkflowExecution.class)))
+                .thenReturn(zeroMatched);
+
+        boolean renewed = workerA.renewLease("exec-taken-over");
+
+        assertFalse(renewed);
+    }
+
+    @Test
+    void worker_UniqueIdentityGenerated_WhenConsumerNameIsBlank() {
+        ExecutionWorker defaultWorker1 = new ExecutionWorker(queue, workflowRepository, executionRepository, validator, engine, mongoTemplate,
+                false, 2000L, 10000L, 60000L, 20000L, "");
+        ExecutionWorker defaultWorker2 = new ExecutionWorker(queue, workflowRepository, executionRepository, validator, engine, mongoTemplate,
+                false, 2000L, 10000L, 60000L, 20000L, null);
+
+        assertNotNull(defaultWorker1.getWorkerId());
+        assertTrue(defaultWorker1.getWorkerId().startsWith("worker-"));
+        assertNotEquals("worker-default", defaultWorker1.getWorkerId());
+
+        assertNotNull(defaultWorker2.getWorkerId());
+        assertTrue(defaultWorker2.getWorkerId().startsWith("worker-"));
+
+        // Must be unique between distinct instances
+        assertNotEquals(defaultWorker1.getWorkerId(), defaultWorker2.getWorkerId());
+    }
+
+    @Test
+    void worker_ClampsHeartbeat_WhenHeartbeatGreaterOrEqualToLeaseDuration() {
+        ExecutionWorker clampedWorker = new ExecutionWorker(queue, workflowRepository, executionRepository, validator, engine, mongoTemplate,
+                false, 2000L, 10000L, 30000L, 45000L, "test-clamped");
+
+        // Heartbeat was configured at 45000ms which is >= leaseDuration (30000ms)
+        // Must clamp to leaseDuration / 3 = 10000ms
+        assertEquals(30000L, clampedWorker.getLeaseDurationMs());
+        assertEquals(10000L, clampedWorker.getHeartbeatIntervalMs());
     }
 }
