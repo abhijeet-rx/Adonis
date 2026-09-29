@@ -12,7 +12,6 @@ import com.adonis.model.WorkflowNode;
 import com.adonis.repository.WorkflowExecutionRepository;
 import com.adonis.repository.WorkflowRepository;
 import com.adonis.util.SecretRedactor;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -31,31 +30,23 @@ public class WorkflowExecutionService {
     public WorkflowExecutionService(
             WorkflowRepository workflowRepository,
             WorkflowExecutionValidator validator,
-            WorkflowExecutionEngine engine) {
-        this(workflowRepository, validator, engine, null);
-    }
-
-    @Autowired
-    public WorkflowExecutionService(
-            WorkflowRepository workflowRepository,
-            WorkflowExecutionValidator validator,
             WorkflowExecutionEngine engine,
-            @Autowired(required = false) WorkflowExecutionRepository executionRepository) {
-        this.workflowRepository = workflowRepository;
-        this.validator = validator;
-        this.engine = engine;
-        this.executionRepository = executionRepository;
+            WorkflowExecutionRepository executionRepository) {
+        this.workflowRepository = Objects.requireNonNull(workflowRepository, "WorkflowRepository must not be null");
+        this.validator = Objects.requireNonNull(validator, "WorkflowExecutionValidator must not be null");
+        this.engine = Objects.requireNonNull(engine, "WorkflowExecutionEngine must not be null");
+        this.executionRepository = Objects.requireNonNull(executionRepository, "WorkflowExecutionRepository must not be null");
     }
 
     /**
      * Loads the workflow verifying ownership, validates its graph structure,
      * persists an initial RUNNING execution record, sequentially executes nodes,
      * updates the record to SUCCESS or FAILED with node-by-node details (including SKIPPED downstream nodes),
-     * and returns the final execution result.
+     * and returns the deeply sanitized final execution result.
      *
      * @param workflowId the workflow ID
      * @param userId the authenticated user ID
-     * @return WorkflowExecutionResult
+     * @return sanitized WorkflowExecutionResult
      */
     public WorkflowExecutionResult executeWorkflow(String workflowId, String userId) {
         Workflow workflow = workflowRepository.findByIdAndUserId(workflowId, userId)
@@ -63,11 +54,6 @@ public class WorkflowExecutionService {
 
         List<WorkflowNode> executionOrder = validator.validateAndOrder(workflow);
         String triggerType = determineTriggerType(executionOrder);
-
-        // If execution repository is not configured, execute in-memory
-        if (executionRepository == null) {
-            return engine.execute(workflow, executionOrder, userId);
-        }
 
         // 1. Create and persist initial execution record (RUNNING)
         WorkflowExecution execution = WorkflowExecution.start(workflow.getId(), userId, triggerType);
@@ -80,23 +66,26 @@ public class WorkflowExecutionService {
             engineResult = engine.execute(workflow, executionOrder, userId, executionId);
         } catch (Exception ex) {
             Instant completedAt = Instant.now();
-            execution.markFailed(completedAt, Collections.emptyList(), "Execution engine failure: " + ex.getMessage());
+            String sanitizedError = SecretRedactor.redactString("Execution engine failure: " + ex.getMessage());
+            execution.markFailed(completedAt, Collections.emptyList(), sanitizedError);
             executionRepository.save(execution);
             throw ex;
         }
 
-        // 3. Transform node execution results with secret redaction and identify SKIPPED nodes
-        List<NodeExecution> nodeExecutions = buildNodeExecutions(engineResult.nodes(), executionOrder);
+        // 3. Transform node execution results with secret redaction for both API return and MongoDB persistence
+        WorkflowExecutionResult sanitizedResult = SecretRedactor.sanitize(engineResult);
+        List<NodeExecution> nodeExecutions = buildNodeExecutions(sanitizedResult.nodes(), executionOrder);
 
         // 4. Update and persist final execution state (SUCCESS or FAILED)
-        if (engineResult.status() == ExecutionStatus.SUCCESS) {
-            execution.markSuccess(engineResult.completedAt(), nodeExecutions);
+        if (sanitizedResult.status() == ExecutionStatus.SUCCESS) {
+            execution.markSuccess(sanitizedResult.completedAt(), nodeExecutions);
         } else {
-            execution.markFailed(engineResult.completedAt(), nodeExecutions, engineResult.error());
+            execution.markFailed(sanitizedResult.completedAt(), nodeExecutions, sanitizedResult.error());
         }
         executionRepository.save(execution);
 
-        return engineResult;
+        // 5. Return sanitized execution result to caller
+        return sanitizedResult;
     }
 
     /**
@@ -107,10 +96,6 @@ public class WorkflowExecutionService {
      * @return full detailed ExecutionResponse
      */
     public ExecutionResponse getExecution(String executionId, String userId) {
-        if (executionRepository == null) {
-            throw new ExecutionNotFoundException("Execution repository is not available");
-        }
-
         WorkflowExecution execution = executionRepository.findByIdAndUserId(executionId, userId)
                 .orElseThrow(() -> new ExecutionNotFoundException("Execution not found with id: " + executionId));
 
@@ -129,10 +114,6 @@ public class WorkflowExecutionService {
         // Enforce workflow ownership first; hide cross-user existence with 404
         workflowRepository.findByIdAndUserId(workflowId, userId)
                 .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found with id: " + workflowId));
-
-        if (executionRepository == null) {
-            return PageResponse.of(Collections.emptyList(), pageable.getPageNumber(), pageable.getPageSize(), 0L, 0);
-        }
 
         Page<WorkflowExecution> page = executionRepository.findByWorkflowIdAndUserId(workflowId, userId, pageable);
         List<ExecutionSummaryResponse> summaryList = page.getContent().stream()
@@ -159,10 +140,6 @@ public class WorkflowExecutionService {
      * @return lightweight ExecutionSummaryResponse page
      */
     public PageResponse<ExecutionSummaryResponse> getUserExecutions(String userId, ExecutionStatus status, Pageable pageable) {
-        if (executionRepository == null) {
-            return PageResponse.of(Collections.emptyList(), pageable.getPageNumber(), pageable.getPageSize(), 0L, 0);
-        }
-
         Page<WorkflowExecution> page;
         if (status != null) {
             page = executionRepository.findByUserIdAndStatus(userId, status, pageable);
@@ -206,7 +183,7 @@ public class WorkflowExecutionService {
                 executedIds.add(res.nodeId());
                 Map<String, Object> sanitizedInput = SecretRedactor.redactMap(res.input());
                 Map<String, Object> sanitizedOutput = SecretRedactor.redactMap(res.output());
-                String sanitizedError = res.error() != null ? String.valueOf(SecretRedactor.redactValue(res.error())) : null;
+                String sanitizedError = SecretRedactor.redactString(res.error());
 
                 NodeExecution nodeExec = new NodeExecution(
                         res.nodeId(),

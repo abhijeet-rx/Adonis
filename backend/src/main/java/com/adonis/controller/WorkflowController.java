@@ -78,7 +78,7 @@ public class WorkflowController {
             Authentication authentication) {
         UserPrincipal principal = getAuthenticatedPrincipal(authentication);
         WorkflowExecutionResult result = executionService.executeWorkflow(id, principal.id());
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(result.sanitized());
     }
 
     @GetMapping("/{id}/executions")

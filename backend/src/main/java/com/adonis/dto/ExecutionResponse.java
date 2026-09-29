@@ -2,6 +2,7 @@ package com.adonis.dto;
 
 import com.adonis.execution.ExecutionStatus;
 import com.adonis.model.WorkflowExecution;
+import com.adonis.util.SecretRedactor;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.time.Instant;
@@ -46,7 +47,7 @@ public record ExecutionResponse(
                 model.getCompletedAt(),
                 model.getDurationMs(),
                 nodeResponses,
-                model.getError()
+                SecretRedactor.redactString(model.getError())
         );
     }
 }

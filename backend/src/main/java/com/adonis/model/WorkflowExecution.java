@@ -1,6 +1,7 @@
 package com.adonis.model;
 
 import com.adonis.execution.ExecutionStatus;
+import com.adonis.util.SecretRedactor;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
@@ -58,7 +59,7 @@ public class WorkflowExecution {
         this.completedAt = completedAt;
         this.durationMs = durationMs;
         this.nodeExecutions = nodeExecutions != null ? new ArrayList<>(nodeExecutions) : new ArrayList<>();
-        this.error = error;
+        this.error = SecretRedactor.redactString(error);
     }
 
     public static WorkflowExecution start(String workflowId, String userId, String triggerType) {
@@ -90,7 +91,7 @@ public class WorkflowExecution {
         this.completedAt = completedAt != null ? completedAt : Instant.now();
         this.durationMs = (this.startedAt != null) ? Duration.between(this.startedAt, this.completedAt).toMillis() : 0L;
         this.nodeExecutions = nodes != null ? new ArrayList<>(nodes) : new ArrayList<>();
-        this.error = errorMessage != null ? errorMessage : "Workflow execution failed";
+        this.error = SecretRedactor.redactString(errorMessage != null ? errorMessage : "Workflow execution failed");
     }
 
     public String getId() {
@@ -170,6 +171,6 @@ public class WorkflowExecution {
     }
 
     public void setError(String error) {
-        this.error = error;
+        this.error = SecretRedactor.redactString(error);
     }
 }

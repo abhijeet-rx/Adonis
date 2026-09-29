@@ -1,6 +1,7 @@
 package com.adonis.model;
 
 import com.adonis.execution.ExecutionStatus;
+import com.adonis.util.SecretRedactor;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -32,9 +33,9 @@ public class NodeExecution {
         this.startedAt = startedAt;
         this.completedAt = completedAt;
         this.durationMs = durationMs;
-        this.input = input != null ? new LinkedHashMap<>(input) : new LinkedHashMap<>();
-        this.output = output != null ? new LinkedHashMap<>(output) : new LinkedHashMap<>();
-        this.error = error;
+        this.input = SecretRedactor.redactMap(input);
+        this.output = SecretRedactor.redactMap(output);
+        this.error = SecretRedactor.redactString(error);
     }
 
     public static NodeExecution success(String nodeId, String nodeType,
@@ -50,8 +51,8 @@ public class NodeExecution {
                 startedAt,
                 completedAt,
                 duration,
-                input != null ? input : Collections.emptyMap(),
-                output != null ? output : Collections.emptyMap(),
+                SecretRedactor.redactMap(input),
+                SecretRedactor.redactMap(output),
                 null
         );
     }
@@ -69,9 +70,9 @@ public class NodeExecution {
                 startedAt,
                 completedAt,
                 duration,
-                input != null ? input : Collections.emptyMap(),
+                SecretRedactor.redactMap(input),
                 Collections.emptyMap(),
-                error != null ? error : "Node execution failed"
+                SecretRedactor.redactString(error != null ? error : "Node execution failed")
         );
     }
 
@@ -142,7 +143,7 @@ public class NodeExecution {
     }
 
     public void setInput(Map<String, Object> input) {
-        this.input = input != null ? new LinkedHashMap<>(input) : new LinkedHashMap<>();
+        this.input = SecretRedactor.redactMap(input);
     }
 
     public Map<String, Object> getOutput() {
@@ -150,7 +151,7 @@ public class NodeExecution {
     }
 
     public void setOutput(Map<String, Object> output) {
-        this.output = output != null ? new LinkedHashMap<>(output) : new LinkedHashMap<>();
+        this.output = SecretRedactor.redactMap(output);
     }
 
     public String getError() {
@@ -158,6 +159,6 @@ public class NodeExecution {
     }
 
     public void setError(String error) {
-        this.error = error;
+        this.error = SecretRedactor.redactString(error);
     }
 }

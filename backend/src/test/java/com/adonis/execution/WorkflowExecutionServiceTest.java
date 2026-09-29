@@ -34,6 +34,9 @@ class WorkflowExecutionServiceTest {
     @Mock
     private WorkflowRepository workflowRepository;
 
+    @Mock
+    private com.adonis.repository.WorkflowExecutionRepository executionRepository;
+
     private WorkflowExecutionValidator validator;
     private WorkflowExecutionEngine engine;
     private WorkflowExecutionService executionService;
@@ -72,7 +75,16 @@ class WorkflowExecutionServiceTest {
         );
         validator = new WorkflowExecutionValidator(executors);
         engine = new WorkflowExecutionEngine(executors);
-        executionService = new WorkflowExecutionService(workflowRepository, validator, engine);
+        executionService = new WorkflowExecutionService(workflowRepository, validator, engine, executionRepository);
+
+        org.mockito.Mockito.lenient().when(executionRepository.save(org.mockito.ArgumentMatchers.any(com.adonis.model.WorkflowExecution.class)))
+                .thenAnswer(inv -> {
+                    com.adonis.model.WorkflowExecution exec = inv.getArgument(0);
+                    if (exec.getId() == null) {
+                        exec.setId("exec-test-" + java.util.UUID.randomUUID().toString().substring(0, 8));
+                    }
+                    return exec;
+                });
     }
 
     @Test

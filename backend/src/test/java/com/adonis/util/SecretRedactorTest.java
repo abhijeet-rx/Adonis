@@ -78,4 +78,65 @@ class SecretRedactorTest {
         assertTrue(SecretRedactor.redactMap(null).isEmpty());
         assertTrue(SecretRedactor.redactMap(Map.of()).isEmpty());
     }
+
+    @Test
+    void redactString_UrlCredentials_Redacted() {
+        String error = "Failed connecting to https://admin:mySecretPassword123@api.internal.com:8443/v1/resource";
+        String redacted = SecretRedactor.redactString(error);
+
+        assertFalse(redacted.contains("mySecretPassword123"));
+        assertEquals("Failed connecting to https://admin:[REDACTED]@api.internal.com:8443/v1/resource", redacted);
+    }
+
+    @Test
+    void redactString_EmbeddedKeyValueSecrets_Redacted() {
+        String error = "Error in auth: apiKey=abc-123-secret and password: my-secret-pass and token=jwt-token-xyz";
+        String redacted = SecretRedactor.redactString(error);
+
+        assertFalse(redacted.contains("abc-123-secret"));
+        assertFalse(redacted.contains("my-secret-pass"));
+        assertFalse(redacted.contains("jwt-token-xyz"));
+        assertTrue(redacted.contains("apiKey=[REDACTED]"));
+        assertTrue(redacted.contains("password: [REDACTED]"));
+        assertTrue(redacted.contains("token=[REDACTED]"));
+    }
+
+    @Test
+    void redactString_EmbeddedBearerAndAuthHeader_Redacted() {
+        String error = "Server returned 401 with Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.xyz";
+        String redacted = SecretRedactor.redactString(error);
+
+        assertFalse(redacted.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
+        assertTrue(redacted.contains("Authorization: [REDACTED]"));
+    }
+
+    @Test
+    void redactString_PemPrivateKey_Redacted() {
+        String pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----";
+        String redacted = SecretRedactor.redactString(pem);
+
+        assertEquals("[REDACTED]", redacted);
+    }
+
+    @Test
+    void isSensitiveKey_MatchesSensitiveKeyNames() {
+        assertTrue(SecretRedactor.isSensitiveKey("authorization"));
+        assertTrue(SecretRedactor.isSensitiveKey("Authorization"));
+        assertTrue(SecretRedactor.isSensitiveKey("apiKey"));
+        assertTrue(SecretRedactor.isSensitiveKey("x-api-key"));
+        assertTrue(SecretRedactor.isSensitiveKey("client_secret"));
+        assertTrue(SecretRedactor.isSensitiveKey("password"));
+        assertTrue(SecretRedactor.isSensitiveKey("pwd"));
+        assertTrue(SecretRedactor.isSensitiveKey("accessToken"));
+        assertTrue(SecretRedactor.isSensitiveKey("refresh_token"));
+        assertTrue(SecretRedactor.isSensitiveKey("auth"));
+        assertTrue(SecretRedactor.isSensitiveKey("authToken"));
+
+        // Safe keys
+        assertFalse(SecretRedactor.isSensitiveKey("author"));
+        assertFalse(SecretRedactor.isSensitiveKey("authority"));
+        assertFalse(SecretRedactor.isSensitiveKey("url"));
+        assertFalse(SecretRedactor.isSensitiveKey("status"));
+        assertFalse(SecretRedactor.isSensitiveKey("name"));
+    }
 }

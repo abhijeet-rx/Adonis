@@ -1,5 +1,7 @@
 package com.adonis.execution;
 
+import com.adonis.util.SecretRedactor;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -23,6 +25,14 @@ public record WorkflowExecutionResult(
     public List<NodeExecutionResult> nodeExecutions() {
         return nodes;
     }
+
+    /**
+     * Returns a deeply sanitized copy of this execution result with sensitive data redacted.
+     */
+    public WorkflowExecutionResult sanitized() {
+        return SecretRedactor.sanitize(this);
+    }
+
     public static WorkflowExecutionResult success(
             String executionId,
             String workflowId,

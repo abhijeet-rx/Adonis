@@ -1,5 +1,8 @@
 package com.adonis.util;
 
+import com.adonis.execution.NodeExecutionResult;
+import com.adonis.execution.WorkflowExecutionResult;
+
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -9,29 +12,63 @@ public final class SecretRedactor {
 
     private static final Set<String> SENSITIVE_KEY_SUBSTRINGS = Set.of(
             "authorization",
-            "proxy-authorization",
+            "proxyauthorization",
             "token",
             "accesstoken",
             "refreshtoken",
             "idtoken",
+            "authtoken",
+            "sessiontoken",
             "secret",
             "clientsecret",
             "password",
             "passwd",
             "pwd",
             "apikey",
-            "api-key",
-            "api_key",
             "credential",
             "credentials",
             "privatekey",
-            "private_key",
             "cookie",
-            "set-cookie"
+            "setcookie",
+            "bearer",
+            "authentication"
     );
 
+    // PEM Private Key pattern
+    private static final Pattern PEM_PRIVATE_KEY_PATTERN = Pattern.compile(
+            "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+    );
+
+    // URL with embedded credentials: https?://user:password@host
+    private static final Pattern URL_CREDENTIAL_PATTERN = Pattern.compile(
+            "(?i)(https?://)([^:/?#@\\s]*):([^/?#@\\s]+)@"
+    );
+
+    // Authorization / Proxy-Authorization / Authentication headers in text
+    private static final Pattern AUTH_HEADER_PATTERN = Pattern.compile(
+            "(?i)\\b(Authorization|Proxy-Authorization|Authentication)\\s*:\\s*(?!\\[REDACTED\\])[^\\r\\n,;]+"
+    );
+
+    // Standalone Bearer header value
     private static final Pattern BEARER_PATTERN = Pattern.compile("(?i)^Bearer\\s+.+$");
+
+    // Embedded Bearer token in text
+    private static final Pattern EMBEDDED_BEARER_PATTERN = Pattern.compile(
+            "(?i)\\bBearer\\s+(?!\\[REDACTED\\])[a-zA-Z0-9_\\-\\.~+/]+=*"
+    );
+
+    // Embedded key=value or key: value for sensitive keys (e.g., apiKey, secretToken, password)
+    private static final Pattern KEY_VALUE_SECRET_PATTERN = Pattern.compile(
+            "(?i)\\b([a-zA-Z0-9_-]*(?:api[-_]?key|password|passwd|pwd|secret|token|credential|private[-_]?key)[a-zA-Z0-9_-]*)\\s*([:=]\\s*)(?!\\[REDACTED\\])([^\\r\\n\\s,;&\"'\\[\\]{}>]+)"
+    );
+
+    // Full-string JWT check
     private static final Pattern JWT_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+$");
+
+    // Embedded JWT token (standard 3-segment base64url starting with eyJ)
+    private static final Pattern EMBEDDED_JWT_PATTERN = Pattern.compile(
+            "\\beyJ[a-zA-Z0-9_-]{8,}\\.[a-zA-Z0-9_-]{8,}\\.[a-zA-Z0-9_-]{8,}\\b"
+    );
 
     private SecretRedactor() {
     }
@@ -90,21 +127,47 @@ public final class SecretRedactor {
     /**
      * Inspects primitive or string values for sensitive tokens.
      */
+    @SuppressWarnings("unchecked")
     public static Object redactValue(Object value) {
         if (value == null) {
             return null;
         }
         if (value instanceof String str) {
-            String trimmed = str.trim();
-            if (BEARER_PATTERN.matcher(trimmed).matches()) {
-                return "Bearer " + REDACTED_VALUE;
-            }
-            if (trimmed.length() > 20 && JWT_PATTERN.matcher(trimmed).matches()) {
-                return REDACTED_VALUE;
-            }
-            return str;
+            return redactString(str);
+        }
+        if (value instanceof Map<?, ?> map) {
+            return redactMap((Map<String, ?>) map);
+        }
+        if (value instanceof Collection<?> collection) {
+            return redactCollection(collection);
         }
         return value;
+    }
+
+    /**
+     * Deeply sanitizes arbitrary strings, error messages, and exception texts.
+     */
+    public static String redactString(String input) {
+        if (input == null) {
+            return null;
+        }
+        String trimmed = input.trim();
+        if (BEARER_PATTERN.matcher(trimmed).matches()) {
+            return "Bearer " + REDACTED_VALUE;
+        }
+        if (trimmed.length() > 20 && JWT_PATTERN.matcher(trimmed).matches()) {
+            return REDACTED_VALUE;
+        }
+
+        String result = input;
+        result = PEM_PRIVATE_KEY_PATTERN.matcher(result).replaceAll(REDACTED_VALUE);
+        result = URL_CREDENTIAL_PATTERN.matcher(result).replaceAll("$1$2:" + REDACTED_VALUE + "@");
+        result = AUTH_HEADER_PATTERN.matcher(result).replaceAll("$1: " + REDACTED_VALUE);
+        result = EMBEDDED_BEARER_PATTERN.matcher(result).replaceAll("Bearer " + REDACTED_VALUE);
+        result = KEY_VALUE_SECRET_PATTERN.matcher(result).replaceAll("$1$2" + REDACTED_VALUE);
+        result = EMBEDDED_JWT_PATTERN.matcher(result).replaceAll(REDACTED_VALUE);
+
+        return result;
     }
 
     /**
@@ -115,12 +178,57 @@ public final class SecretRedactor {
             return false;
         }
         String normalized = key.toLowerCase(Locale.ROOT).replaceAll("[_-]", "");
+        if (normalized.equals("auth") || normalized.endsWith("auth") || normalized.contains("basicauth") || normalized.contains("authtoken")) {
+            return true;
+        }
         for (String sensitive : SENSITIVE_KEY_SUBSTRINGS) {
-            String normalizedSensitive = sensitive.replaceAll("[_-]", "");
-            if (normalized.contains(normalizedSensitive)) {
+            if (normalized.contains(sensitive)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Sanitizes a full WorkflowExecutionResult for both API response and database persistence.
+     */
+    public static WorkflowExecutionResult sanitize(WorkflowExecutionResult raw) {
+        if (raw == null) {
+            return null;
+        }
+        List<NodeExecutionResult> sanitizedNodes = raw.nodes() != null
+                ? raw.nodes().stream().map(SecretRedactor::sanitizeNodeResult).toList()
+                : Collections.emptyList();
+        String sanitizedError = redactString(raw.error());
+        return new WorkflowExecutionResult(
+                raw.executionId(),
+                raw.workflowId(),
+                raw.status(),
+                raw.startedAt(),
+                raw.completedAt(),
+                raw.durationMs(),
+                sanitizedNodes,
+                sanitizedError
+        );
+    }
+
+    /**
+     * Sanitizes an individual NodeExecutionResult.
+     */
+    public static NodeExecutionResult sanitizeNodeResult(NodeExecutionResult raw) {
+        if (raw == null) {
+            return null;
+        }
+        return new NodeExecutionResult(
+                raw.nodeId(),
+                raw.nodeType(),
+                raw.status(),
+                raw.startedAt(),
+                raw.completedAt(),
+                raw.durationMs(),
+                redactMap(raw.input()),
+                redactMap(raw.output()),
+                redactString(raw.error())
+        );
     }
 }
