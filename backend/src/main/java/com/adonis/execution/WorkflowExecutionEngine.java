@@ -3,6 +3,7 @@ package com.adonis.execution;
 import com.adonis.model.Workflow;
 import com.adonis.model.WorkflowEdge;
 import com.adonis.model.WorkflowNode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -12,9 +13,16 @@ import java.util.*;
 public class WorkflowExecutionEngine {
 
     private final List<NodeExecutor> executors;
+    private final RetryPolicy retryPolicy;
 
     public WorkflowExecutionEngine(List<NodeExecutor> executors) {
+        this(executors, new RetryPolicy(new FailureClassifier()));
+    }
+
+    @Autowired
+    public WorkflowExecutionEngine(List<NodeExecutor> executors, RetryPolicy retryPolicy) {
         this.executors = executors != null ? executors : List.of();
+        this.retryPolicy = retryPolicy != null ? retryPolicy : new RetryPolicy(new FailureClassifier());
     }
 
     /**
@@ -61,8 +69,8 @@ public class WorkflowExecutionEngine {
                     .findFirst()
                     .orElseThrow(() -> new IllegalStateException("No executor found for node type: " + node.getType()));
 
-            // Execute node
-            NodeExecutionResult nodeResult = executor.execute(node, input, context);
+            // Execute node with retry policy
+            NodeExecutionResult nodeResult = retryPolicy.executeWithRetry(node, input, context, executor);
             context.recordNodeResult(node.getId(), nodeResult);
             executedNodes.add(nodeResult);
 

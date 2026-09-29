@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import type { Node } from '@xyflow/react';
-import { X, Trash2, Check, Sliders, Globe, Zap, Box } from 'lucide-react';
+import { X, Trash2, Check, Sliders, Globe, Zap, Box, RotateCcw } from 'lucide-react';
 import { NODE_TYPES, type CustomNodeData } from './workflowAdapter';
 
 interface NodeConfigPanelProps {
@@ -32,6 +32,21 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
   const [triggerType, setTriggerType] = useState<string>(
     typeof nodeData.triggerType === 'string' ? nodeData.triggerType : 'Manual'
   );
+
+  const rawRetry = (nodeData.retry as Record<string, unknown>) || {};
+  const [retryEnabled, setRetryEnabled] = useState<boolean>(
+    Boolean(rawRetry.enabled ?? nodeData.retryEnabled ?? false)
+  );
+  const [maxRetries, setMaxRetries] = useState<number>(
+    Number(rawRetry.maxRetries ?? nodeData.maxRetries ?? 3)
+  );
+  const [initialBackoffMs, setInitialBackoffMs] = useState<number>(
+    Number(rawRetry.initialBackoffMs ?? nodeData.retryBackoff ?? 1000)
+  );
+  const [backoffMultiplier, setBackoffMultiplier] = useState<number>(
+    Number(rawRetry.backoffMultiplier ?? nodeData.retryBackoffMultiplier ?? 2.0)
+  );
+
   const [isSavedRecently, setIsSavedRecently] = useState(false);
 
   const handleApply = (e: React.FormEvent) => {
@@ -42,7 +57,14 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
       description: description.trim(),
       method,
       url: url.trim(),
-      triggerType
+      triggerType,
+      retry: {
+        enabled: retryEnabled,
+        maxRetries: Math.max(0, Math.min(10, Number(maxRetries) || 0)),
+        initialBackoffMs: Math.max(0, Math.min(60000, Number(initialBackoffMs) || 1000)),
+        backoffMultiplier: Math.max(0.1, Number(backoffMultiplier) || 2.0),
+        maxBackoffMs: 30000
+      }
     };
     onUpdateNodeData(selectedNode.id, updatedData);
     setIsSavedRecently(true);
@@ -153,6 +175,81 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
               <option value="Scheduled">Scheduled (Config only)</option>
               <option value="Webhook">Webhook (Config only)</option>
             </select>
+          </div>
+        )}
+
+        {/* Retry Configuration (for executable nodes) */}
+        {selectedNode.type !== NODE_TYPES.TRIGGER && (
+          <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5 cursor-pointer">
+                <RotateCcw className="w-3.5 h-3.5 text-sky-400" />
+                Retry Policy
+              </label>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={retryEnabled}
+                  onChange={(e) => setRetryEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-8 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
+                <span className="ml-2 text-[11px] text-slate-400 font-medium">
+                  {retryEnabled ? 'Enabled' : 'Disabled'}
+                </span>
+              </label>
+            </div>
+
+            {retryEnabled && (
+              <div className="space-y-2 pt-1 border-t border-slate-800/80 text-xs">
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                    <span>Max Retries</span>
+                    <span className="font-mono text-slate-300">{maxRetries} after initial</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={maxRetries}
+                    onChange={(e) => setMaxRetries(Math.max(0, Math.min(10, parseInt(e.target.value) || 0)))}
+                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                    <span>Initial Backoff</span>
+                    <span className="font-mono text-slate-300">{initialBackoffMs} ms</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    step={100}
+                    max={60000}
+                    value={initialBackoffMs}
+                    onChange={(e) => setInitialBackoffMs(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                    <span>Backoff Multiplier</span>
+                    <span className="font-mono text-slate-300">{backoffMultiplier}x</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={1}
+                    step={0.5}
+                    max={10}
+                    value={backoffMultiplier}
+                    onChange={(e) => setBackoffMultiplier(Math.max(1, parseFloat(e.target.value) || 2.0))}
+                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
 

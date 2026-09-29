@@ -222,3 +222,32 @@ This document records the architectural and technical decisions made during the 
   - Positive: Execution history survives browser reloads; developers can inspect historical node outputs and errors; credentials are protected; multi-tenant security is strictly maintained.
   - Trade-off: Storage requirements increase with execution frequency; retention/cleanup policies are deferred to future operational hardening phases.
 
+---
+
+## Phase 6: Retries & Failure Handling
+
+### ADR-018: In-Process Node Retries, Exponential Backoff, Failure Classification, and Granular Attempt Tracking
+* **Date**: 2026-09-29
+* **Status**: Accepted
+* **Context**: Workflows frequently encounter transient errors when integrating with external services (such as HTTP 503 Service Unavailable, 429 Rate Limits, network socket drops, and DNS glitches). Without retry policies, single transient faults abort the entire workflow run, requiring manual re-execution. Conversely, attempting retries on deterministic client errors (such as 400 Bad Request or 401 Unauthorized) wastes execution resources and inflates execution latency.
+* **Decision**:
+  - **Node-Level Retry Configuration (`RetryConfig`)**: Allow optional retry policies embedded in node configuration data (`enabled`, `maxRetries`, `initialBackoffMs`, `backoffMultiplier`, `maxBackoffMs`). Workflows lacking configuration default to `enabled: false, maxRetries: 0`.
+  - **Retry Semantics (`maxRetries`)**: `maxRetries` strictly specifies the number of retries attempted *after* the initial failed attempt (i.e. `maxRetries = 2` yields up to 3 total attempts).
+  - **Intelligent Failure Classification (`FailureClassifier`)**:
+    - Retryable: HTTP 408, 429, 500, 502, 503, 504, connection timeouts, refused connections, and network drops.
+    - Non-Retryable: HTTP 400, 401, 403, 404, malformed URL syntax, validation failures.
+    - Non-retryable failures immediately abort retries and fail fast, preserving system resources.
+  - **Exponential Backoff with Max Delay Clamping**:
+    - Delay computed as `min(initialBackoffMs * (backoffMultiplier ^ (attempt - 1)), maxBackoffMs)`.
+    - Enforce a pluggable delay strategy (`RetryDelayStrategy`) so production utilizes `Thread.sleep` synchronously, while unit/integration tests utilize non-blocking strategies (`noOp`) for millisecond-fast test suites.
+  - **Granular Attempt Tracking (`NodeExecutionAttempt`)**:
+    - Track each individual attempt with its `attemptNumber`, `status`, `startedAt`, `completedAt`, `durationMs`, `input`, `output`, and `error`.
+    - Persist the attempt list in MongoDB under `NodeExecution.attempts` and expose via API response DTOs.
+  - **Multi-Attempt Secret Redaction**:
+    - Recursively redact secrets across every attempt input, output, and error message using `SecretRedactor` before persistence and API responses.
+  - **Strict Synchronous Boundary**:
+    - Execution remains synchronous and in-process within the HTTP request lifecycle. Redis, Kafka, and background asynchronous worker pools remain deferred to Phase 7.
+* **Consequences**:
+  - Positive: Workflows automatically recover from transient network and server issues; deterministic errors fail fast without wasteful delay; full observability into retry attempts and durations in the UI; clean backward compatibility with Phase 0–5 workflows.
+  - Trade-off: Synchronous backoff delays hold the HTTP request thread during execution. Long-running retries are constrained until asynchronous job queues are implemented in Phase 7.
+

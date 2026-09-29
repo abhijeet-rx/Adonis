@@ -2,6 +2,7 @@ package com.adonis.util;
 
 import com.adonis.execution.NodeExecutionResult;
 import com.adonis.execution.WorkflowExecutionResult;
+import com.adonis.model.NodeExecutionAttempt;
 
 import java.util.*;
 import java.util.regex.Pattern;
@@ -213,12 +214,34 @@ public final class SecretRedactor {
     }
 
     /**
+     * Sanitizes an individual NodeExecutionAttempt.
+     */
+    public static NodeExecutionAttempt sanitizeAttempt(NodeExecutionAttempt raw) {
+        if (raw == null) {
+            return null;
+        }
+        return new NodeExecutionAttempt(
+                raw.getAttemptNumber(),
+                raw.getStatus(),
+                raw.getStartedAt(),
+                raw.getCompletedAt(),
+                raw.getDurationMs(),
+                redactMap(raw.getInput()),
+                redactMap(raw.getOutput()),
+                redactString(raw.getError())
+        );
+    }
+
+    /**
      * Sanitizes an individual NodeExecutionResult.
      */
     public static NodeExecutionResult sanitizeNodeResult(NodeExecutionResult raw) {
         if (raw == null) {
             return null;
         }
+        List<NodeExecutionAttempt> sanitizedAttempts = raw.attempts() != null
+                ? raw.attempts().stream().map(SecretRedactor::sanitizeAttempt).toList()
+                : Collections.emptyList();
         return new NodeExecutionResult(
                 raw.nodeId(),
                 raw.nodeType(),
@@ -228,7 +251,9 @@ public final class SecretRedactor {
                 raw.durationMs(),
                 redactMap(raw.input()),
                 redactMap(raw.output()),
-                redactString(raw.error())
+                redactString(raw.error()),
+                raw.retryCount(),
+                sanitizedAttempts
         );
     }
 }

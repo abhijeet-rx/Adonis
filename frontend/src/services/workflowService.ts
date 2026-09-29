@@ -51,6 +51,25 @@ export interface UpdateWorkflowRequest {
 export type ExecutionStatus = 'RUNNING' | 'SUCCESS' | 'FAILED';
 export type NodeExecutionStatus = 'SUCCESS' | 'FAILED' | 'SKIPPED';
 
+export interface RetryConfig {
+  enabled: boolean;
+  maxRetries: number;
+  initialBackoffMs: number;
+  backoffMultiplier: number;
+  maxBackoffMs?: number;
+}
+
+export interface NodeExecutionAttempt {
+  attemptNumber: number;
+  status: ExecutionStatus | NodeExecutionStatus | string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  durationMs: number;
+  input?: Record<string, unknown> | null;
+  output?: Record<string, unknown> | null;
+  error?: string | null;
+}
+
 export interface NodeExecutionResult {
   nodeId: string;
   nodeType: string;
@@ -61,6 +80,8 @@ export interface NodeExecutionResult {
   input?: Record<string, unknown> | null;
   output?: Record<string, unknown> | null;
   error?: string | null;
+  retryCount?: number;
+  attempts?: NodeExecutionAttempt[];
 }
 
 export type NodeExecution = NodeExecutionResult;

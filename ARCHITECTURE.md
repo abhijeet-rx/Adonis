@@ -59,7 +59,7 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **React Flow Visual Canvas** | **Operational** (`@xyflow/react` v12 visual builder) | Phase 3 (Completed) |
 | **Workflow Execution Engine** | **Operational** (Topological DAG, in-process, fail-fast) | Phase 4 (Completed) |
 | **Execution History & Logs** | **Operational** (Persistent records, skipped nodes, redacting, pagination) | Phase 5 (Completed) |
-| **Retries & Failure Handling** | *NOT Implemented* | Phase 6 (Retries + Failure Handling) |
+| **Retries & Failure Handling** | **Operational** (In-process exponential backoff, failure classification, attempt tracking) | Phase 6 (Completed) |
 | **Redis Asynchronous Workers** | *NOT Implemented* | Phase 7 (Redis Asynchronous Workers) |
 | **Scheduling & Webhooks** | *NOT Implemented* | Phase 8 (Scheduling + Webhooks) |
 | **AI Intelligent Nodes** | *NOT Implemented* | Phase 9 (AI Nodes) |
@@ -68,12 +68,11 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |
 
 > **Explicit Boundary & Design Principles**:
-> - **In-Process & Synchronous Execution**: In Phase 5, execution remains strictly synchronous and in-process within the HTTP request lifecycle. No background workers, asynchronous queues, job runners, Redis, or Kafka are introduced.
-> - **Execution Journaling & Persistence**: Every workflow run creates a persistent `WorkflowExecution` document in MongoDB initialized with `status: RUNNING`. Upon completion or failure, the record is updated with final status (`SUCCESS` or `FAILED`), completion timestamp, duration in milliseconds, and node execution traces.
-> - **Fail-Fast Error Handling & Skipped Nodes**: If a node fails during execution, sequential runner stops immediately. The failed node is recorded with its error, unexecuted downstream nodes in the planned topological order are recorded as `SKIPPED`, and overall status becomes `FAILED`.
-> - **Secret Redaction**: Inputs, outputs, and errors are deeply sanitized prior to persistence. Headers such as `Authorization`, `X-Api-Key`, passwords, client secrets, and Bearer tokens are redacted to `[REDACTED]`.
+> - **In-Process & Synchronous Execution**: In Phase 6, execution remains strictly synchronous and in-process within the HTTP request lifecycle. Retries and exponential backoff are performed synchronously via pluggable `RetryDelayStrategy` (defaulting to `Thread.sleep` in production, non-blocking in tests). No background workers, asynchronous queues, job runners, Redis, or Kafka are introduced (deferred to Phase 7).
+> - **Failure Classification & Fast Fail**: Failures are classified via `FailureClassifier`. Non-retryable errors (e.g. HTTP 400, 401, 403, 404, invalid URLs) abort retries immediately and fail fast. Retryable errors (e.g. HTTP 408, 429, 500, 502, 503, 504, connection timeouts, refused connections) trigger exponential backoff up to `maxRetries` (retries *after* initial attempt).
+> - **Granular Attempt Tracking & Persistence**: Every attempt executed for a node is recorded in `NodeExecutionAttempt` (attempt number, status, timestamps, duration, input, output, error) and persisted within `NodeExecution.attempts` in MongoDB.
+> - **Secret Redaction**: Inputs, outputs, and errors are deeply sanitized across every attempt prior to persistence and API response via `SecretRedactor`.
 > - **Ownership Isolation**: All execution history endpoints enforce user ownership (`findByIdAndUserId` and `workflowRepository.findByIdAndUserId`). Unauthorized or nonexistent executions return `404 Not Found`.
-> - **Redis Deferral**: Redis and queue workers remain strictly deferred to Phase 7.
 
 ---
 
@@ -214,28 +213,86 @@ graph TD
 
 ---
 
-## 6. Package Architecture (Backend)
+## 6. Retries & Failure Handling (Phase 6)
+
+Adonis implements an in-process, synchronous retry mechanism designed to make node execution resilient against temporary network partitions, rate limits, and server-side glitches without delaying execution with complex distributed broker setups.
+
+```text
+Node Execution Invocation
+       │
+       ▼
+   Attempt 1 ──> [Success] ──> Proceed Downstream with Output
+       │ (Failure)
+       ▼
+Is Failure Retryable? (FailureClassifier)
+       ├── No (400, 401, 403, 404, invalid URLs, validation error)
+       │     └──> Fast-Fail immediately (No retries wasted) ──> Workflow FAILED (Downstream SKIPPED)
+       └── Yes (408, 429, 500, 502, 503, 504, timeout, network error)
+             │
+             ▼
+       Attempts Remaining? (attempt < maxRetries)
+             ├── Yes ──> Calculate Backoff (initialBackoffMs * multiplier^attempt, clamped to maxBackoffMs)
+             │            │
+             │            └──> RetryDelayStrategy.delay(...) ──> Execute Next Attempt
+             └── No  ──> Exhausted All Retries ──> Workflow FAILED (Downstream SKIPPED)
+```
+
+### Core Architecture Components
+
+1. **Retry Configuration (`RetryConfig`)**:
+   - Embedded within `WorkflowNode.data.retryConfig`.
+   - Fields: `enabled` (boolean), `maxRetries` (int, default 3, max 10), `initialBackoffMs` (long, default 1000ms), `backoffMultiplier` (double, default 2.0), `maxBackoffMs` (long, default 30000ms).
+   - Strict Semantics: `maxRetries` defines the number of retries *after* the initial failed attempt (total attempts = `1 + maxRetries`).
+   - Backward Compatibility: Workflows without a `retryConfig` object default to `enabled: false, maxRetries: 0`.
+
+2. **Failure Classifier (`FailureClassifier`)**:
+   - Evaluates whether an error is temporary or permanent.
+   - **Retryable**: HTTP status codes 408 (Request Timeout), 429 (Too Many Requests), 500 (Internal Server Error), 502 (Bad Gateway), 503 (Service Unavailable), 504 (Gateway Timeout); network exceptions (e.g. `ConnectException`, `SocketTimeoutException`, `HttpConnectTimeoutException`, connection refused).
+   - **Non-Retryable**: HTTP status codes 400 (Bad Request), 401 (Unauthorized), 403 (Forbidden), 404 (Not Found); deterministic client errors (e.g. `IllegalArgumentException`, invalid URL schema, malformed configuration).
+   - Conservative Default: Unknown errors or unclassified exceptions default to non-retryable to prevent pointless loops.
+
+3. **Exponential Backoff & Delay Strategy (`RetryPolicy` & `RetryDelayStrategy`)**:
+   - Formula: `delay = min(initialBackoffMs * (backoffMultiplier ^ (attempt - 1)), maxBackoffMs)`.
+   - Pluggable `RetryDelayStrategy`:
+     - Production: `RetryDelayStrategy.threadSleep()` pauses the calling thread synchronously.
+     - Testing: `RetryDelayStrategy.noOp()` or mock recording strategies execute synchronously without artificial latency.
+
+4. **Attempt Journaling & Persistence (`NodeExecutionAttempt`)**:
+   - Each attempt records: `attemptNumber` (1-indexed), `status` (`SUCCESS` or `FAILED`), `startedAt`, `completedAt`, `durationMs`, `input`, `output`, and `error`.
+   - Redaction: Every attempt is sanitized via `SecretRedactor` before being stored on `NodeExecution.attempts` and returned in API responses.
+   - The aggregated `NodeExecution` reflects `retryCount` (number of retry attempts triggered), the overall final status, and the complete attempts array.
+
+5. **Downstream Propagation**:
+   - When a node succeeds (either on initial attempt or after N retries), its sanitized output is routed as the input to downstream nodes.
+   - When a node exhausts its retries or aborts due to a non-retryable error, fail-fast stops execution immediately and unexecuted downstream nodes are marked `SKIPPED`.
+
+---
+
+## 7. Package Architecture (Backend)
 
 ```
 backend/src/main/java/com/adonis/
 ├── AdonisApplication.java       # Application Bootstrap
 ├── config/                      # Web MVC, CORS, and HttpClient configuration
 ├── controller/                  # REST Controllers (HealthController, AuthController, UserController, WorkflowController, ExecutionController)
-├── dto/                         # Strongly-typed Java 21 Records (CreateWorkflowRequest, WorkflowResponse, ExecutionResponse, ExecutionSummaryResponse, NodeExecutionResponse, PageResponse)
+├── dto/                         # Strongly-typed Java 21 Records (CreateWorkflowRequest, WorkflowResponse, ExecutionResponse, ExecutionSummaryResponse, NodeExecutionResponse, NodeExecutionAttemptResponse, PageResponse)
 ├── exception/                   # Global exception handling (GlobalExceptionHandler, WorkflowValidationException, ExecutionNotFoundException)
-├── execution/                   # Workflow Execution Engine & Service
+├── execution/                   # Workflow Execution Engine, Retry Policies & Service
 │   ├── ExecutionContext.java            # Runtime thread-safe execution state
 │   ├── ExecutionStatus.java             # RUNNING, SUCCESS, FAILED, SKIPPED status enum
+│   ├── FailureClassifier.java           # Retryable vs non-retryable error classifier
 │   ├── GenericNodeExecutor.java         # Pass-through generic node executor
 │   ├── HttpRequestNodeExecutor.java     # JDK HttpClient executor for GET/POST/PUT/DELETE/PATCH
-│   ├── NodeExecutionResult.java         # Node execution output, duration, and error record
+│   ├── NodeExecutionResult.java         # Node execution output, duration, retry count, attempts, and error record
 │   ├── NodeExecutor.java                # Extensible node executor interface
+│   ├── RetryDelayStrategy.java          # Pluggable backoff delay interface (threadSleep vs noOp)
+│   ├── RetryPolicy.java                 # Exponential backoff loop, attempt tracking, and logging
 │   ├── TriggerNodeExecutor.java         # Starting trigger node executor
 │   ├── WorkflowExecutionEngine.java     # In-process sequential runner with fail-fast semantics
 │   ├── WorkflowExecutionResult.java     # Overall workflow execution outcome record
 │   ├── WorkflowExecutionService.java    # Ownership lookup, persistence lifecycle & query orchestration
 │   └── WorkflowExecutionValidator.java  # 7-rule graph validation & Kahn's topological sort
-├── model/                       # MongoDB Document Models (User, Workflow, WorkflowNode, WorkflowEdge, WorkflowStatus, WorkflowExecution, NodeExecution)
+├── model/                       # MongoDB Document Models (User, Workflow, WorkflowNode, WorkflowEdge, WorkflowStatus, WorkflowExecution, NodeExecution, NodeExecutionAttempt, RetryConfig)
 ├── repository/                  # Spring Data MongoDB Repositories (UserRepository, WorkflowRepository, WorkflowExecutionRepository)
 ├── security/                    # SecurityConfig, JwtService, JwtAuthenticationFilter, UserPrincipal
 ├── util/                        # Utilities (SecretRedactor deep recursive credential sanitization)
@@ -244,7 +301,7 @@ backend/src/main/java/com/adonis/
 
 ---
 
-## 7. Port Allocations & Networking
+## 8. Port Allocations & Networking
 
 | Service | Internal Port | Host / Exposed Port | Protocol | Status | Purpose |
 |---|---|---|---|---|---|

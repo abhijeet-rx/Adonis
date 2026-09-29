@@ -12,7 +12,8 @@ import {
   Copy,
   Check,
   MinusCircle,
-  RefreshCw
+  RefreshCw,
+  RotateCcw
 } from 'lucide-react';
 import type {
   WorkflowExecutionResult,
@@ -250,6 +251,14 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                               HTTP {statusCode}
                             </span>
                           )}
+                          {((node.attempts && node.attempts.length > 1) || (node.retryCount != null && node.retryCount > 0)) && (
+                            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                              <RotateCcw className="w-2.5 h-2.5" />
+                              {node.attempts && node.attempts.length > 1
+                                ? `${node.attempts.length} attempts`
+                                : `${node.retryCount} retries`}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -291,6 +300,52 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                         <div className="p-2.5 rounded bg-rose-950/50 border border-rose-800/40 text-rose-300 font-mono text-[11px]">
                           <span className="font-semibold block mb-0.5">Error:</span>
                           {node.error}
+                        </div>
+                      )}
+
+                      {/* Attempts Breakdown */}
+                      {node.attempts && node.attempts.length > 1 && (
+                        <div className="rounded-lg bg-slate-950/80 border border-slate-800 p-2.5 space-y-2">
+                          <div className="flex items-center justify-between text-[11px] font-semibold text-slate-300">
+                            <span className="flex items-center gap-1.5">
+                              <RotateCcw className="w-3 h-3 text-amber-400" />
+                              Attempts Breakdown ({node.attempts.length} total)
+                            </span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {node.attempts.map((att) => {
+                              const attSuccess = att.status === 'SUCCESS';
+                              return (
+                                <div
+                                  key={att.attemptNumber}
+                                  className="flex items-center justify-between px-2.5 py-1.5 rounded bg-slate-900/90 border border-slate-800 text-[11px] font-mono"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-slate-400 font-semibold">
+                                      Attempt {att.attemptNumber}
+                                    </span>
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                        attSuccess
+                                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                          : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                      }`}
+                                    >
+                                      {att.status}
+                                    </span>
+                                    {att.error && (
+                                      <span className="text-slate-400 truncate max-w-xs text-[10px]" title={att.error}>
+                                        {att.error}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-slate-500 text-[10px]">
+                                    {att.durationMs != null ? `${att.durationMs} ms` : '-'}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       )}
 

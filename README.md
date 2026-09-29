@@ -8,9 +8,9 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 5 — Execution History & Logs** *(Completed)*
+**Phase 6 — Retries & Failure Handling** *(Completed)*
 
-This phase introduces persistent execution history and node-by-node logs for Adonis. Every workflow execution is permanently stored in a dedicated `workflow_executions` MongoDB collection. The execution record captures the initial `RUNNING` status, final `SUCCESS` or `FAILED` outcome, start and completion timestamps, execution duration, and granular node-by-node execution records (including `SKIPPED` status for downstream nodes halted by fail-fast policies). Sensitive secrets (such as `Authorization` headers, API keys, and passwords) are automatically redacted before persistence. Execution history and detail queries enforce strict authenticated user ownership (`findByIdAndUserId`), hiding cross-tenant records behind `404 Not Found`. The visual workflow editor features an execution history panel with pagination and an upgraded execution inspector showing formatted inputs, outputs, errors, and skipped steps.
+This phase introduces node-level retry policies, intelligent failure classification, exponential backoff, and granular attempt tracking to the Adonis workflow execution engine. Developers can configure retry behavior per node (`enabled`, `maxRetries`, `initialBackoffMs`, `backoffMultiplier`, `maxBackoffMs`). Failures are classified into retryable (HTTP 408, 429, 500, 502, 503, 504, connection timeouts, network drops) and non-retryable (HTTP 400, 401, 403, 404, validation errors), failing fast on deterministic client errors while recovering from transient infrastructure faults. Every execution attempt is tracked (`NodeExecutionAttempt`) with its duration, status, and error details, sanitized via `SecretRedactor`, persisted in MongoDB (`NodeExecution.attempts`), and visualized in the UI with retry attempt badges and expandable execution traces. Execution remains strictly synchronous and in-process, with asynchronous queue workers deferred to Phase 7.
 
 ---
 
@@ -157,7 +157,7 @@ docker compose up --build
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0, Phase 1, Phase 2, Phase 3, Phase 4 & Phase 5 — Operational)**:
+- **Current (Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5 & Phase 6 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users`, `workflows`, and `workflow_executions` collections)
@@ -169,14 +169,17 @@ docker compose up --build
   - Node executors: `TriggerNodeExecutor` (manual execution context), `HttpRequestNodeExecutor` (real HTTP requests via standard Java `HttpClient` for GET/POST/PUT/DELETE/PATCH), and `GenericNodeExecutor` (safe pass-through)
   - Persistent workflow execution records (`workflow_executions`) tracking status (`RUNNING` → `SUCCESS`/`FAILED`), timestamps, duration, and granular node executions
   - Fail-fast skipped node persistence (downstream nodes marked `SKIPPED`)
-  - Automatic secret redaction for sensitive headers, API keys, bearer tokens, and credentials
+  - Node-level retry policies (`RetryConfig`: `enabled`, `maxRetries`, `initialBackoffMs`, `backoffMultiplier`, `maxBackoffMs`) with safe defaults and exponential backoff
+  - Intelligent failure classification (`FailureClassifier`) distinguishing retryable errors (408, 429, 500, 502, 503, 504, connection timeouts, refused connections) from non-retryable errors (400, 401, 403, 404, invalid URLs)
+  - Granular attempt tracking (`NodeExecutionAttempt`: attemptNumber, status, timestamps, duration, input, output, error) with retry count recorded on `NodeExecution`
+  - Deep secret redaction (`SecretRedactor`) for sensitive headers, API keys, bearer tokens, and credentials across all attempts, results, and persistence
+  - Pluggable backoff delay strategy (`RetryDelayStrategy`: production thread sleep, non-blocking test stub)
   - Paginated execution history endpoints (`GET /api/workflows/{id}/executions`, `GET /api/executions`) and detailed execution inspector (`GET /api/executions/{id}`)
-  - Execution history panel with pagination and enhanced execution results modal inspecting node inputs, outputs, errors, and skipped steps
+  - Execution history panel with pagination and enhanced execution results modal inspecting node inputs, outputs, errors, skipped steps, and attempt histories
   - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, and `mongodb`
   - Automated GitHub Actions CI pipeline (backend test & frontend build)
 
-- **Planned Functionality (Phases 6–12)**:
-  - Retries & failure handling policies (Planned for Phase 6)
+- **Planned Functionality (Phases 7–12)**:
   - Redis asynchronous workers & queues (Planned for Phase 7)
   - Scheduling & webhooks (Planned for Phase 8)
   - AI nodes powered by Gemini/OpenAI (Planned for Phase 9)
@@ -194,7 +197,7 @@ docker compose up --build
 - [x] **Phase 3 — React Flow Visual Workflow Builder**
 - [x] **Phase 4 — Workflow Execution Engine**
 - [x] **Phase 5 — Execution History + Logs**
-- [ ] **Phase 6 — Retries + Failure Handling**
+- [x] **Phase 6 — Retries + Failure Handling**
 - [ ] **Phase 7 — Redis Asynchronous Workers**
 - [ ] **Phase 8 — Scheduling + Webhooks**
 - [ ] **Phase 9 — AI Nodes**

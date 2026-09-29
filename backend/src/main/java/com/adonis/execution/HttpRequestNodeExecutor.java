@@ -144,9 +144,14 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
             HttpResponse<String> response = httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
             Instant completedAt = Instant.now();
 
+            int statusCode = response.statusCode();
+            String statusText = FailureClassifier.getHttpStatusName(statusCode);
+            boolean isSuccessStatus = statusCode >= 200 && statusCode < 400;
+
             Map<String, Object> output = new LinkedHashMap<>();
-            output.put("statusCode", response.statusCode());
-            output.put("success", response.statusCode() >= 200 && response.statusCode() < 400);
+            output.put("statusCode", statusCode);
+            output.put("statusText", statusText);
+            output.put("success", isSuccessStatus);
 
             Map<String, String> headerMap = new LinkedHashMap<>();
             response.headers().map().forEach((k, v) -> {
@@ -157,6 +162,21 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
             output.put("headers", headerMap);
             output.put("body", response.body() != null ? response.body() : "");
 
+            boolean retryConfigEnabled = com.adonis.model.RetryConfig.fromNodeData(nodeData).enabled();
+            boolean failOnErrorStatus = Boolean.parseBoolean(String.valueOf(nodeData.getOrDefault("failOnErrorStatus", "false")))
+                    || Boolean.parseBoolean(String.valueOf(nodeData.getOrDefault("failOnHttpStatus", "false")));
+
+            if (!isSuccessStatus && (retryConfigEnabled || failOnErrorStatus)) {
+                String errorDetails = response.body() != null && !response.body().isBlank()
+                        ? response.body().trim()
+                        : statusText;
+                if (errorDetails.length() > 300) {
+                    errorDetails = errorDetails.substring(0, 300) + "...";
+                }
+                String errorMessage = "HTTP " + statusCode + " " + statusText + ": " + errorDetails;
+                return NodeExecutionResult.failure(node.getId(), node.getType(), startedAt, completedAt, recordedInput, output, errorMessage);
+            }
+
             return NodeExecutionResult.success(node.getId(), node.getType(), startedAt, completedAt, recordedInput, output);
         } catch (HttpTimeoutException e) {
             return NodeExecutionResult.failure(
@@ -165,16 +185,26 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                     startedAt,
                     Instant.now(),
                     recordedInput,
-                    "HTTP request timed out after " + DEFAULT_TIMEOUT.toSeconds() + "s: " + e.getMessage()
+                    "HTTP request timed out after " + DEFAULT_TIMEOUT.toSeconds() + "s: " + (e.getMessage() != null ? e.getMessage() : "timeout")
             );
-        } catch (IOException e) {
+        } catch (java.net.ConnectException e) {
             return NodeExecutionResult.failure(
                     node.getId(),
                     node.getType(),
                     startedAt,
                     Instant.now(),
                     recordedInput,
-                    "HTTP connection failed: " + e.getMessage()
+                    "HTTP connection failed: Connection refused" + (e.getMessage() != null ? " (" + e.getMessage() + ")" : "")
+            );
+        } catch (IOException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            return NodeExecutionResult.failure(
+                    node.getId(),
+                    node.getType(),
+                    startedAt,
+                    Instant.now(),
+                    recordedInput,
+                    "HTTP connection failed: " + msg
             );
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

@@ -270,4 +270,67 @@ class WorkflowExecutionServiceTest {
         boolean g1Executed = result.nodes().stream().anyMatch(n -> "g1".equals(n.nodeId()));
         assertFalse(g1Executed, "Downstream node g1 should not have been executed");
     }
+
+    @Test
+    void executeWorkflow_WithRetryConfig_PersistsRetryCountAndAttempts() {
+        List<NodeExecutor> executors = List.of(
+                new TriggerNodeExecutor(),
+                new HttpRequestNodeExecutor(),
+                new GenericNodeExecutor()
+        );
+        WorkflowExecutionEngine retryEngine = new WorkflowExecutionEngine(
+                executors,
+                new RetryPolicy(new FailureClassifier(), RetryDelayStrategy.noOp())
+        );
+        WorkflowExecutionService serviceWithRetryEngine = new WorkflowExecutionService(
+                workflowRepository, validator, retryEngine, executionRepository
+        );
+
+        Workflow workflow = new Workflow();
+        workflow.setId("wf-persisted-retry");
+        workflow.setUserId("user-1");
+
+        WorkflowNode triggerNode = new WorkflowNode("t1", "trigger", Map.of("triggerType", "manual"));
+        // Points to an unused port to simulate Connection Refused (retryable)
+        WorkflowNode httpNode = new WorkflowNode("h1", "httpRequest", Map.of(
+                "url", "http://127.0.0.1:59999/unreachable",
+                "method", "GET",
+                "retry", Map.of("enabled", true, "maxRetries", 2, "initialBackoffMs", 100L)
+        ));
+
+        workflow.setNodes(List.of(triggerNode, httpNode));
+        workflow.setEdges(List.of(new WorkflowEdge("e1", "t1", "h1")));
+
+        when(workflowRepository.findByIdAndUserId("wf-persisted-retry", "user-1"))
+                .thenReturn(Optional.of(workflow));
+
+        org.mockito.ArgumentCaptor<com.adonis.model.WorkflowExecution> captor =
+                org.mockito.ArgumentCaptor.forClass(com.adonis.model.WorkflowExecution.class);
+
+        WorkflowExecutionResult result = serviceWithRetryEngine.executeWorkflow("wf-persisted-retry", "user-1");
+
+        assertEquals(ExecutionStatus.FAILED, result.status());
+
+        org.mockito.Mockito.verify(executionRepository, org.mockito.Mockito.atLeastOnce()).save(captor.capture());
+        com.adonis.model.WorkflowExecution saved = captor.getValue();
+        assertNotNull(saved);
+
+        com.adonis.model.NodeExecution savedHttpNode = saved.getNodeExecutions().stream()
+                .filter(n -> "h1".equals(n.getNodeId()))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(ExecutionStatus.FAILED, savedHttpNode.getStatus());
+        assertEquals(2, savedHttpNode.getRetryCount(), "2 retries after initial attempt = 3 attempts total");
+        assertEquals(3, savedHttpNode.getAttempts().size());
+        assertTrue(savedHttpNode.getError().contains("Node failed after 3 attempts"));
+
+        for (int i = 0; i < 3; i++) {
+            com.adonis.model.NodeExecutionAttempt att = savedHttpNode.getAttempts().get(i);
+            assertEquals(i + 1, att.getAttemptNumber());
+            assertEquals(ExecutionStatus.FAILED, att.getStatus());
+            assertNotNull(att.getStartedAt());
+            assertNotNull(att.getCompletedAt());
+        }
+    }
 }

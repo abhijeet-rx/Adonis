@@ -194,7 +194,9 @@ public class WorkflowExecutionService {
                         res.durationMs(),
                         sanitizedInput,
                         sanitizedOutput,
-                        sanitizedError
+                        sanitizedError,
+                        res.retryCount(),
+                        res.attempts()
                 );
                 results.add(nodeExec);
             }
