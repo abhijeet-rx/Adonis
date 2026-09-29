@@ -13,6 +13,8 @@ services:
       - MONGODB_URI=mongodb://mongodb:27017/adonis
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_STREAM_NAME=adonis:execution:stream
+      - REDIS_CONSUMER_GROUP=adonis-workers
       - JWT_SECRET=${JWT_SECRET}
     depends_on:
       - mongodb
@@ -43,7 +45,7 @@ services:
       - mongo-data:/data/db
     restart: unless-stopped
 
-  # Redis Asynchronous Queue Service (Phase 7)
+  # Redis Asynchronous Queue Service (Phase 7 & 7.1)
   redis:
     image: redis:7-alpine
     container_name: adonis-redis

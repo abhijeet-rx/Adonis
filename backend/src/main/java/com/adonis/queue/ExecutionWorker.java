@@ -10,6 +10,7 @@ import com.adonis.repository.WorkflowRepository;
 import com.adonis.util.SecretRedactor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
@@ -25,9 +26,11 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Background asynchronous worker responsible for polling execution jobs from Redis/Queue,
+ * Background asynchronous worker responsible for consuming execution jobs from Redis/Queue,
  * atomically transitioning execution state (QUEUED -> RUNNING), invoking the existing
- * WorkflowExecutionEngine, and persisting the final execution results.
+ * WorkflowExecutionEngine, persisting results, and acknowledging processed messages.
+ *
+ * Implements crash recovery for unacknowledged pending messages and stale execution reconciliation.
  */
 @Component
 public class ExecutionWorker implements SmartLifecycle {
@@ -43,10 +46,15 @@ public class ExecutionWorker implements SmartLifecycle {
 
     private final boolean enabled;
     private final long pollTimeoutMs;
+    private final long pendingClaimIdleMs;
+    private final long staleExecutionTimeoutMs;
+    private final long pendingCheckIntervalMs;
+    private final String consumerName;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread workerThread;
 
+    @Autowired
     public ExecutionWorker(
             ExecutionQueue queue,
             WorkflowRepository workflowRepository,
@@ -55,7 +63,10 @@ public class ExecutionWorker implements SmartLifecycle {
             WorkflowExecutionEngine engine,
             MongoTemplate mongoTemplate,
             @Value("${adonis.worker.enabled:true}") boolean enabled,
-            @Value("${adonis.worker.poll-timeout-ms:2000}") long pollTimeoutMs) {
+            @Value("${adonis.worker.poll-timeout-ms:2000}") long pollTimeoutMs,
+            @Value("${adonis.worker.pending-claim-idle-ms:60000}") long pendingClaimIdleMs,
+            @Value("${adonis.worker.stale-execution-timeout-ms:300000}") long staleExecutionTimeoutMs,
+            @Value("${adonis.worker.consumer-name:}") String consumerName) {
         this.queue = Objects.requireNonNull(queue, "ExecutionQueue must not be null");
         this.workflowRepository = Objects.requireNonNull(workflowRepository, "WorkflowRepository must not be null");
         this.executionRepository = Objects.requireNonNull(executionRepository, "WorkflowExecutionRepository must not be null");
@@ -64,6 +75,23 @@ public class ExecutionWorker implements SmartLifecycle {
         this.mongoTemplate = Objects.requireNonNull(mongoTemplate, "MongoTemplate must not be null");
         this.enabled = enabled;
         this.pollTimeoutMs = Math.max(100, pollTimeoutMs);
+        this.pendingClaimIdleMs = Math.max(1000, pendingClaimIdleMs);
+        this.staleExecutionTimeoutMs = Math.max(1000, staleExecutionTimeoutMs);
+        this.pendingCheckIntervalMs = 15000L;
+        this.consumerName = (consumerName != null && !consumerName.isBlank()) ? consumerName : "worker-default";
+    }
+
+    public ExecutionWorker(
+            ExecutionQueue queue,
+            WorkflowRepository workflowRepository,
+            WorkflowExecutionRepository executionRepository,
+            WorkflowExecutionValidator validator,
+            WorkflowExecutionEngine engine,
+            MongoTemplate mongoTemplate,
+            boolean enabled,
+            long pollTimeoutMs) {
+        this(queue, workflowRepository, executionRepository, validator, engine, mongoTemplate,
+                enabled, pollTimeoutMs, 60000L, 300000L, "worker-test");
     }
 
     @Override
@@ -73,7 +101,7 @@ public class ExecutionWorker implements SmartLifecycle {
             return;
         }
         if (running.compareAndSet(false, true)) {
-            log.info("Starting ExecutionWorker background polling loop...");
+            log.info("Starting ExecutionWorker [{}] background polling loop...", consumerName);
             workerThread = new Thread(this::runWorkerLoop, "adonis-execution-worker");
             workerThread.setDaemon(true);
             workerThread.start();
@@ -83,14 +111,14 @@ public class ExecutionWorker implements SmartLifecycle {
     @Override
     public void stop() {
         if (running.compareAndSet(true, false)) {
-            log.info("Stopping ExecutionWorker gracefully...");
+            log.info("Stopping ExecutionWorker [{}] gracefully...", consumerName);
             if (workerThread != null) {
                 workerThread.interrupt();
                 try {
                     workerThread.join(5000);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    log.warn("ExecutionWorker stop interrupted while joining thread");
+                    log.warn("ExecutionWorker stop interrupted while waiting for thread termination");
                 }
             }
             log.info("ExecutionWorker stopped cleanly");
@@ -103,11 +131,21 @@ public class ExecutionWorker implements SmartLifecycle {
     }
 
     private void runWorkerLoop() {
+        long lastPendingCheckTime = 0;
+
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
-                Optional<ExecutionJob> jobOpt = queue.poll(Duration.ofMillis(pollTimeoutMs));
-                if (jobOpt.isPresent()) {
-                    processJob(jobOpt.get());
+                // 1. Periodically check and reclaim stale pending unacknowledged messages
+                long now = System.currentTimeMillis();
+                if (now - lastPendingCheckTime >= pendingCheckIntervalMs) {
+                    lastPendingCheckTime = now;
+                    recoverPendingJobs();
+                }
+
+                // 2. Poll next message from the queue
+                Optional<QueuedJobMessage> jobMsgOpt = queue.poll(Duration.ofMillis(pollTimeoutMs));
+                if (jobMsgOpt.isPresent()) {
+                    processJob(jobMsgOpt.get());
                 }
             } catch (Exception ex) {
                 if (Thread.currentThread().isInterrupted()) {
@@ -125,36 +163,106 @@ public class ExecutionWorker implements SmartLifecycle {
     }
 
     /**
-     * Core worker execution logic. Validates execution state, performs atomic state
-     * transition from QUEUED to RUNNING, executes the engine, and updates execution record.
-     *
-     * @param job the deserialized execution job
-     * @return true if the job was processed or safely handled, false if missing/duplicate
+     * Inspects and reclaims stale unacknowledged messages in the consumer group's PEL
+     * that were abandoned due to prior worker crash.
+     */
+    public void recoverPendingJobs() {
+        try {
+            List<QueuedJobMessage> pendingJobs = queue.claimPending(Duration.ofMillis(pendingClaimIdleMs), 10);
+            if (pendingJobs != null && !pendingJobs.isEmpty()) {
+                log.info("Claimed {} pending unacknowledged jobs for crash recovery", pendingJobs.size());
+                for (QueuedJobMessage msg : pendingJobs) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        break;
+                    }
+                    processJob(msg);
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to claim pending jobs during recovery check", ex);
+        }
+    }
+
+    /**
+     * Convenience overload for legacy callers and unit tests.
      */
     public boolean processJob(ExecutionJob job) {
         if (job == null) {
             return false;
         }
+        return processJob(new QueuedJobMessage("manual-" + job.executionId(), job, 1));
+    }
 
+    /**
+     * Core worker execution logic:
+     * 1. Verifies authoritative execution record exists in MongoDB.
+     * 2. Checks current state:
+     *    - If SUCCESS or FAILED: acknowledges duplicate delivery without re-executing.
+     *    - If RUNNING: reconciles stale executions beyond timeout; otherwise avoids duplicate execution.
+     *    - If QUEUED: atomically claims execution via findAndModify (QUEUED -> RUNNING).
+     * 3. Executes the WorkflowExecutionEngine.
+     * 4. Persists the sanitized SUCCESS or FAILED execution record to MongoDB.
+     * 5. Acknowledges (XACK) the message ONLY AFTER successful persistence.
+     *
+     * @param message the queued job message containing messageId and job payload
+     * @return true if the job was processed to terminal state, false if skipped or pending
+     */
+    public boolean processJob(QueuedJobMessage message) {
+        if (message == null || message.job() == null) {
+            return false;
+        }
+
+        String messageId = message.messageId();
+        ExecutionJob job = message.job();
         String executionId = job.executionId();
         String workflowId = job.workflowId();
-        log.info("Execution job received: executionId={}, workflowId={}", executionId, workflowId);
 
-        // 1. Verify execution exists
+        log.info("Execution job claimed: executionId={}, workflowId={}, messageId={}, consumer={}",
+                executionId, workflowId, messageId, consumerName);
+
+        // 1. Verify execution exists in MongoDB
         Optional<WorkflowExecution> executionOpt = executionRepository.findById(executionId);
         if (executionOpt.isEmpty()) {
-            log.warn("Execution record not found for executionId: {}. Skipping job.", executionId);
+            log.warn("Execution record not found for executionId: {}. Acknowledging orphaned job to clear queue.", executionId);
+            queue.acknowledge(messageId);
             return false;
         }
 
         WorkflowExecution existing = executionOpt.get();
-        if (existing.getStatus() != ExecutionStatus.QUEUED) {
-            log.info("Execution {} is already in status {}. Skipping duplicate job delivery.",
+
+        // 2. Check current status
+        if (existing.getStatus() == ExecutionStatus.SUCCESS || existing.getStatus() == ExecutionStatus.FAILED) {
+            log.info("Execution {} has already reached terminal status {}. Acknowledging duplicate delivery.",
                     executionId, existing.getStatus());
+            queue.acknowledge(messageId);
             return false;
         }
 
-        // 2. Atomic state transition: QUEUED -> RUNNING
+        if (existing.getStatus() == ExecutionStatus.RUNNING) {
+            Instant startedAt = existing.getStartedAt();
+            long elapsedMs = (startedAt != null) ? Duration.between(startedAt, Instant.now()).toMillis() : Long.MAX_VALUE;
+
+            if (elapsedMs > staleExecutionTimeoutMs) {
+                log.warn("Execution {} has been RUNNING for {}ms (exceeding stale timeout {}ms). " +
+                                "Marking FAILED to prevent duplicate side effects.",
+                        executionId, elapsedMs, staleExecutionTimeoutMs);
+                existing.markFailed(
+                        Instant.now(),
+                        existing.getNodeExecutions(),
+                        "Execution timed out or processing worker terminated while RUNNING (exceeded " + staleExecutionTimeoutMs + "ms)"
+                );
+                executionRepository.save(existing);
+                queue.acknowledge(messageId);
+                return false;
+            } else {
+                log.info("Execution {} is currently RUNNING (elapsed {}ms <= {}ms). " +
+                                "Skipping re-execution to prevent duplicate side effects.",
+                        executionId, elapsedMs, staleExecutionTimeoutMs);
+                return false;
+            }
+        }
+
+        // 3. Atomic state transition: QUEUED -> RUNNING
         Query query = new Query(Criteria.where("_id").is(executionId).and("status").is(ExecutionStatus.QUEUED));
         Update update = new Update()
                 .set("status", ExecutionStatus.RUNNING)
@@ -167,25 +275,25 @@ public class ExecutionWorker implements SmartLifecycle {
         );
 
         if (claimed == null) {
-            log.info("Execution {} could not be claimed (already claimed or completed by another worker). Skipping.",
-                    executionId);
+            log.info("Execution {} could not be claimed (raced with another worker or status changed).", executionId);
             return false;
         }
 
         log.info("Execution started: executionId={}, workflowId={}", executionId, workflowId);
 
-        // 3. Load workflow from MongoDB
+        // 4. Load workflow from MongoDB
         Optional<Workflow> workflowOpt = workflowRepository.findById(workflowId);
         if (workflowOpt.isEmpty()) {
             log.error("Workflow not found for workflowId: {} during execution: {}", workflowId, executionId);
             claimed.markFailed(Instant.now(), Collections.emptyList(), "Workflow not found with id: " + workflowId);
             executionRepository.save(claimed);
+            queue.acknowledge(messageId);
             return true;
         }
 
         Workflow workflow = workflowOpt.get();
 
-        // 4. Validate graph ordering
+        // 5. Validate graph ordering
         List<WorkflowNode> executionOrder;
         try {
             executionOrder = validator.validateAndOrder(workflow);
@@ -193,10 +301,11 @@ public class ExecutionWorker implements SmartLifecycle {
             log.error("Workflow graph validation failed for execution: {}", executionId, ex);
             claimed.markFailed(Instant.now(), Collections.emptyList(), "Workflow validation failed: " + ex.getMessage());
             executionRepository.save(claimed);
+            queue.acknowledge(messageId);
             return true;
         }
 
-        // 5. Execute via WorkflowExecutionEngine
+        // 6. Execute via WorkflowExecutionEngine
         WorkflowExecutionResult engineResult;
         try {
             engineResult = engine.execute(workflow, executionOrder, job.userId(), executionId);
@@ -205,11 +314,16 @@ public class ExecutionWorker implements SmartLifecycle {
             Instant completedAt = Instant.now();
             String sanitizedError = SecretRedactor.redactString("Execution engine failure: " + ex.getMessage());
             claimed.markFailed(completedAt, Collections.emptyList(), sanitizedError);
-            executionRepository.save(claimed);
+            try {
+                executionRepository.save(claimed);
+                queue.acknowledge(messageId);
+            } catch (Exception saveEx) {
+                log.error("Failed to persist failed execution result for execution: {}", executionId, saveEx);
+            }
             return true;
         }
 
-        // 6. Sanitize and persist final state
+        // 7. Sanitize and persist final state
         WorkflowExecutionResult sanitizedResult = SecretRedactor.sanitize(engineResult);
         List<NodeExecution> nodeExecutions = buildNodeExecutions(sanitizedResult.nodes(), executionOrder);
 
@@ -221,7 +335,16 @@ public class ExecutionWorker implements SmartLifecycle {
             log.warn("Execution failed: executionId={}, error={}", executionId, sanitizedResult.error());
         }
 
-        executionRepository.save(claimed);
+        try {
+            executionRepository.save(claimed);
+            // CRITICAL: Acknowledge ONLY after successful persistence
+            queue.acknowledge(messageId);
+        } catch (Exception saveEx) {
+            log.error("CRITICAL: Failed to persist execution result for executionId: {}. Message [{}] not ACKed.",
+                    executionId, messageId, saveEx);
+            throw saveEx;
+        }
+
         return true;
     }
 
@@ -262,5 +385,13 @@ public class ExecutionWorker implements SmartLifecycle {
         }
 
         return results;
+    }
+
+    public long getStaleExecutionTimeoutMs() {
+        return staleExecutionTimeoutMs;
+    }
+
+    public long getPendingClaimIdleMs() {
+        return pendingClaimIdleMs;
     }
 }

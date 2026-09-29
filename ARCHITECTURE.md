@@ -16,9 +16,9 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-## 2. Current Architecture (Phase 7 Operational)
+## 2. Current Architecture (Phase 7.1 Operational)
 
-In Phase 7, the operational system topology provides an interactive visual workflow canvas integrated with persistent workflow definitions, asynchronous Redis queueing, autonomous worker processes, and persistent execution history:
+In Phase 7.1, the operational system topology provides an interactive visual workflow canvas integrated with persistent workflow definitions, asynchronous Redis Streams queueing, consumer groups, autonomous worker processes with crash recovery, and persistent execution history:
 
 ```text
 React (Vite + TypeScript + Tailwind + @xyflow/react)
@@ -35,9 +35,11 @@ Service Layer (AuthService, UserService, WorkflowService, WorkflowExecutionServi
    ↓ Enqueue ExecutionJob (executionId, workflowId, userId, triggerType, queuedAt)
 ExecutionQueue Abstraction
    ↓
-Redis 7 Queue (RPUSH adonis:execution:queue)
+Redis 7 Streams (XADD adonis:execution:stream)
    ↓
-ExecutionWorker (BLPOP / leftPop, SmartLifecycle, Atomic findAndModify QUEUED -> RUNNING)
+Consumer Group (adonis-workers, XREADGROUP, PEL crash recovery)
+   ↓
+ExecutionWorker (SmartLifecycle, Atomic findAndModify QUEUED -> RUNNING, XACK on persistent completion)
    ↓
 Execution Engine (Unchanged Core: Kahn's Topological Sort, RetryPolicy, Fail-Fast Runner)
    ├── WorkflowExecutionValidator (7-rule graph & trigger validation)
@@ -320,7 +322,7 @@ backend/src/main/java/com/adonis/
 
 ---
 
-## 9. Phase 7: Redis Asynchronous Workers Architecture
+## 9. Phase 7 & 7.1: Redis Asynchronous Workers & Reliability Hardening Architecture
 
 ### 9.1 Architectural Flow
 
@@ -360,16 +362,24 @@ backend/src/main/java/com/adonis/
 
 1. **Unchanged WorkflowExecutionEngine**:
    The workflow execution engine is treated as an immutable execution core. It encapsulates DAG validation, topological sorting, sequential execution, upstream data resolution, fail-fast semantics, Phase 6 retry policies, failure classification, exponential backoff, attempt tracking, and Phase 5.1 secret redaction. The engine is unaware of Redis or transport mechanics.
-2. **Queue Abstraction (`ExecutionQueue`)**:
-   `WorkflowExecutionService` depends solely on the `ExecutionQueue` interface. In production, `RedisExecutionQueue` pushes jobs via `RPUSH` to `adonis:execution:queue`. In test environments, `InMemoryExecutionQueue` provides non-blocking, isolated execution without requiring a live Redis daemon.
+2. **Reliable Queue Abstraction (`ExecutionQueue`)**:
+   `WorkflowExecutionService` depends solely on the `ExecutionQueue` interface. In production, `RedisExecutionQueue` pushes jobs via `XADD` to `adonis:execution:stream`. Workers consume via Redis Consumer Groups (`adonis-workers`) with `XREADGROUP`. In test environments, `InMemoryExecutionQueue` provides non-blocking, isolated execution and pending message recovery without requiring a live Redis daemon.
 3. **Payload Minimalism (`ExecutionJob`)**:
    Queue messages contain only identifiers (`executionId`, `workflowId`, `userId`, `triggerType`, `queuedAt`). The full workflow definition is never put into Redis. The worker loads authoritative state from MongoDB, avoiding document stale-reads and payload bloat.
-4. **Idempotency & Atomic State Transition**:
-   To guard against duplicate message delivery or multi-worker race conditions, workers execute an atomic `findAndModify` query in MongoDB (`WHERE _id == executionId AND status == QUEUED` -> `SET status = RUNNING, startedAt = now()`). Exactly one worker can claim the execution; any duplicate delivery is safely discarded without re-running nodes.
-5. **Fail-Safe Queue Submission**:
+4. **Delivery Guarantees & Idempotent Execution Claiming**:
+   Redis provides at-least-once message delivery, while MongoDB atomic execution claiming provides idempotent workflow execution and prevents duplicate execution across workers. Workers execute an atomic `findAndModify` query in MongoDB (`WHERE _id == executionId AND status == QUEUED` -> `SET status = RUNNING, startedAt = now()`). Only one worker can claim the execution; any duplicate delivery is safely discarded without re-running nodes.
+5. **Strict Acknowledgement Timing (`XACK`)**:
+   Messages are acknowledged via `XACK` **only after** the execution record has been successfully persisted to MongoDB in a terminal state (`SUCCESS` or `FAILED`). If database persistence fails, the message remains unacknowledged in the consumer group's Pending Entries List (PEL) for subsequent recovery.
+6. **Worker Crash Recovery**:
+   When a worker crashes mid-execution, unacknowledged messages remain in the consumer group's Pending Entries List (PEL). Healthy workers periodically inspect pending entries (`XPENDING`) and reclaim stale unacknowledged messages via `XCLAIM` when their idle duration exceeds `WORKER_PENDING_CLAIM_IDLE_MS`.
+7. **Stale RUNNING Execution Reconciliation**:
+   If a recovered message targets an execution already in `RUNNING` status, workers inspect `startedAt`. If elapsed time exceeds `WORKER_STALE_EXECUTION_TIMEOUT_MS`, the execution is transitioned to `FAILED` with a descriptive message and acknowledged, preventing duplicate external HTTP side effects.
+8. **Poison Pill Quarantine**:
+   Malformed or unparseable messages are moved to a quarantine dead-letter stream (`adonis:execution:stream:dlq`) and acknowledged from the main stream, preventing poison-pill infinite loops while preserving records for inspection.
+9. **Fail-Safe Queue Submission**:
    If MongoDB execution record creation succeeds but Redis enqueueing throws an exception, the system catches the error, transitions the execution record to `FAILED` with a sanitized message, and returns HTTP 500 without leaking Redis internals or leaving the execution stuck in `QUEUED`.
-6. **Graceful Shutdown**:
-   `ExecutionWorker` implements Spring's `SmartLifecycle`. On shutdown, it ceases polling, allows active executions to complete cleanly, and avoids corrupting execution state.
-7. **Frontend Asynchronous Polling**:
-   When the user runs a workflow, the API responds with `202 Accepted`. The UI displays `QUEUED` immediately, triggers an execution history refresh, and polls `/api/executions/{id}` every 1.5 seconds until terminal state (`SUCCESS` or `FAILED`), at which point polling stops cleanly.
+10. **Graceful Shutdown**:
+    `ExecutionWorker` implements Spring's `SmartLifecycle`. On shutdown, it ceases polling, allows active executions to complete cleanly, and avoids corrupting execution state.
+11. **Frontend Asynchronous Polling**:
+    When the user runs a workflow, the API responds with `202 Accepted`. The UI displays `QUEUED` immediately, triggers an execution history refresh, and polls `/api/executions/{id}` every 1.5 seconds until terminal state (`SUCCESS` or `FAILED`), at which point polling stops cleanly.
 

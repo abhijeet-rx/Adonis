@@ -6,17 +6,37 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.data.domain.Range;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.PendingMessage;
+import org.springframework.data.redis.connection.stream.PendingMessages;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Redis list-based implementation of ExecutionQueue using StringRedisTemplate.
- * Produces jobs with RPUSH and consumes jobs with BLPOP / leftPop.
+ * Reliable Redis Streams-based implementation of ExecutionQueue.
+ * Uses Redis Streams (XADD) for publishing, Consumer Groups (XREADGROUP) for at-least-once delivery,
+ * explicit message acknowledgement (XACK) upon successful persistence, and pending entry inspection
+ * (XPENDING / XCLAIM) to recover messages from crashed workers.
  */
 @Component
 @ConditionalOnProperty(name = "adonis.queue.type", havingValue = "redis", matchIfMissing = true)
@@ -26,15 +46,26 @@ public class RedisExecutionQueue implements ExecutionQueue {
 
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
-    private final String queueKey;
+    private final String streamKey;
+    private final String consumerGroup;
+    private final String consumerName;
+    private final String dlqStreamKey;
+    private final AtomicBoolean groupInitialized = new AtomicBoolean(false);
 
     public RedisExecutionQueue(
             StringRedisTemplate redisTemplate,
             ObjectMapper objectMapper,
-            @Value("${adonis.worker.queue-name:adonis:execution:queue}") String queueKey) {
+            @Value("${adonis.worker.stream-name:${adonis.worker.queue-name:adonis:execution:stream}}") String streamKey,
+            @Value("${adonis.worker.consumer-group:adonis-workers}") String consumerGroup,
+            @Value("${adonis.worker.consumer-name:}") String consumerName) {
         this.redisTemplate = Objects.requireNonNull(redisTemplate, "StringRedisTemplate must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "ObjectMapper must not be null");
-        this.queueKey = (queueKey != null && !queueKey.isBlank()) ? queueKey : "adonis:execution:queue";
+        this.streamKey = (streamKey != null && !streamKey.isBlank()) ? streamKey : "adonis:execution:stream";
+        this.consumerGroup = (consumerGroup != null && !consumerGroup.isBlank()) ? consumerGroup : "adonis-workers";
+        this.consumerName = (consumerName != null && !consumerName.isBlank())
+                ? consumerName
+                : "worker-" + UUID.randomUUID().toString().substring(0, 8);
+        this.dlqStreamKey = this.streamKey + ":dlq";
     }
 
     @Override
@@ -43,50 +74,216 @@ public class RedisExecutionQueue implements ExecutionQueue {
             throw new IllegalArgumentException("ExecutionJob must not be null");
         }
         try {
+            ensureGroupExists();
             String payload = objectMapper.writeValueAsString(job);
-            redisTemplate.opsForList().rightPush(queueKey, payload);
-            log.info("Enqueued execution job to Redis [{}]: executionId={}, workflowId={}",
-                    queueKey, job.executionId(), job.workflowId());
+            Map<String, String> fields = Map.of("payload", payload);
+            RecordId recordId = redisTemplate.opsForStream().add(streamKey, fields);
+
+            log.info("Enqueued execution job to Redis Stream [{}]: executionId={}, workflowId={}, recordId={}",
+                    streamKey, job.executionId(), job.workflowId(), recordId != null ? recordId.getValue() : "unknown");
         } catch (JsonProcessingException ex) {
             log.error("Failed to serialize execution job: {}", job.executionId(), ex);
             throw new QueueException("Serialization failure for execution job: " + job.executionId(), ex);
         } catch (Exception ex) {
-            log.error("Failed to enqueue job to Redis queue [{}]: {}", queueKey, job.executionId(), ex);
+            log.error("Failed to enqueue job to Redis stream [{}]: {}", streamKey, job.executionId(), ex);
             throw new QueueException("Redis enqueue operation failed", ex);
         }
     }
 
     @Override
-    public Optional<ExecutionJob> poll(Duration timeout) {
+    public Optional<QueuedJobMessage> poll(Duration timeout) {
         try {
-            long timeoutSeconds = Math.max(1, timeout != null ? timeout.toSeconds() : 2);
-            String payload = redisTemplate.opsForList().leftPop(queueKey, timeoutSeconds, TimeUnit.SECONDS);
-            if (payload == null || payload.isBlank()) {
+            ensureGroupExists();
+            Consumer consumer = Consumer.from(consumerGroup, consumerName);
+            StreamOffset<String> streamOffset = StreamOffset.create(streamKey, ReadOffset.lastConsumed());
+            Duration blockDuration = timeout != null ? timeout : Duration.ofSeconds(2);
+            StreamReadOptions readOptions = StreamReadOptions.empty().count(1).block(blockDuration);
+
+            List<MapRecord<String, String, String>> records = redisTemplate.<String, String>opsForStream()
+                    .read(consumer, readOptions, streamOffset);
+
+            if (records == null || records.isEmpty()) {
                 return Optional.empty();
             }
-            ExecutionJob job = objectMapper.readValue(payload, ExecutionJob.class);
-            return Optional.of(job);
-        } catch (JsonProcessingException ex) {
-            log.error("Failed to deserialize execution job from Redis queue; discarding corrupt message", ex);
-            return Optional.empty();
+
+            MapRecord<String, String, String> record = records.get(0);
+            String recordId = record.getId().getValue();
+            String payload = record.getValue().get("payload");
+
+            if (payload == null || payload.isBlank()) {
+                quarantineMalformedMessage(record.getId(), record.getValue(), "Missing payload field in stream record");
+                return Optional.empty();
+            }
+
+            try {
+                ExecutionJob job = objectMapper.readValue(payload, ExecutionJob.class);
+                return Optional.of(new QueuedJobMessage(recordId, job, 1));
+            } catch (JsonProcessingException ex) {
+                quarantineMalformedMessage(record.getId(), record.getValue(), "Corrupt JSON: " + ex.getMessage());
+                return Optional.empty();
+            }
         } catch (Exception ex) {
-            log.error("Error polling Redis queue [{}]", queueKey, ex);
+            String msg = ex.getMessage();
+            if (msg != null && (msg.contains("NOGROUP") || msg.contains("no such key"))) {
+                groupInitialized.set(false);
+                ensureGroupExists();
+                return Optional.empty();
+            }
+            log.error("Error polling Redis stream [{}] with consumer [{}]", streamKey, consumerName, ex);
             throw new QueueException("Redis poll operation failed", ex);
         }
     }
 
     @Override
+    public void acknowledge(String messageId) {
+        if (messageId == null || messageId.isBlank()) {
+            return;
+        }
+        try {
+            redisTemplate.opsForStream().acknowledge(streamKey, consumerGroup, RecordId.of(messageId));
+            log.debug("Acknowledged message [{}] in consumer group [{}] on stream [{}]",
+                    messageId, consumerGroup, streamKey);
+        } catch (Exception ex) {
+            log.error("Failed to acknowledge message [{}] on stream [{}]", messageId, streamKey, ex);
+            throw new QueueException("Redis acknowledge operation failed", ex);
+        }
+    }
+
+    @Override
+    public List<QueuedJobMessage> claimPending(Duration minIdleTime, int count) {
+        if (minIdleTime == null) {
+            minIdleTime = Duration.ofMinutes(1);
+        }
+        List<QueuedJobMessage> claimedMessages = new ArrayList<>();
+        try {
+            ensureGroupExists();
+            PendingMessages pending = redisTemplate.opsForStream()
+                    .pending(streamKey, consumerGroup, Range.unbounded(), (long) count);
+
+            if (pending == null || pending.isEmpty()) {
+                return Collections.emptyList();
+            }
+
+            List<RecordId> staleRecordIds = new ArrayList<>();
+            Map<String, Long> deliveryCountMap = new HashMap<>();
+
+            for (PendingMessage pm : pending) {
+                Duration elapsed = pm.getElapsedTimeSinceLastDelivery();
+                if (elapsed != null && elapsed.compareTo(minIdleTime) >= 0) {
+                    staleRecordIds.add(pm.getId());
+                    deliveryCountMap.put(pm.getId().getValue(), pm.getTotalDeliveryCount());
+                }
+            }
+
+            if (staleRecordIds.isEmpty()) {
+                return Collections.emptyList();
+            }
+
+            RecordId[] idsArray = staleRecordIds.toArray(new RecordId[0]);
+            List<MapRecord<String, String, String>> claimedRecords = redisTemplate.<String, String>opsForStream()
+                    .claim(streamKey, consumerGroup, consumerName, minIdleTime, idsArray);
+
+            if (claimedRecords == null || claimedRecords.isEmpty()) {
+                return Collections.emptyList();
+            }
+
+            for (MapRecord<String, String, String> record : claimedRecords) {
+                String recordId = record.getId().getValue();
+                String payload = record.getValue().get("payload");
+
+                if (payload == null || payload.isBlank()) {
+                    quarantineMalformedMessage(record.getId(), record.getValue(), "Missing payload in claimed record");
+                    continue;
+                }
+
+                try {
+                    ExecutionJob job = objectMapper.readValue(payload, ExecutionJob.class);
+                    long deliveryCount = deliveryCountMap.getOrDefault(recordId, 1L);
+                    claimedMessages.add(new QueuedJobMessage(recordId, job, (int) deliveryCount));
+                } catch (JsonProcessingException ex) {
+                    quarantineMalformedMessage(record.getId(), record.getValue(), "Corrupt JSON in claimed record: " + ex.getMessage());
+                }
+            }
+        } catch (Exception ex) {
+            log.error("Failed to query or claim pending messages from Redis stream [{}]", streamKey, ex);
+        }
+        return claimedMessages;
+    }
+
+    @Override
     public long size() {
         try {
-            Long size = redisTemplate.opsForList().size(queueKey);
+            Long size = redisTemplate.opsForStream().size(streamKey);
             return size != null ? size : 0L;
         } catch (Exception ex) {
-            log.warn("Failed to check Redis queue size for key [{}]", queueKey, ex);
+            log.warn("Failed to check Redis stream size for key [{}]", streamKey, ex);
             return 0L;
         }
     }
 
-    public String getQueueKey() {
-        return queueKey;
+    private void ensureGroupExists() {
+        if (groupInitialized.get()) {
+            return;
+        }
+        synchronized (this) {
+            if (groupInitialized.get()) {
+                return;
+            }
+            try {
+                redisTemplate.execute((RedisConnection connection) -> {
+                    try {
+                        connection.streamCommands().xGroupCreate(
+                                streamKey.getBytes(StandardCharsets.UTF_8),
+                                consumerGroup,
+                                ReadOffset.from("0"),
+                                true // makeStream = true (creates stream if not existing)
+                        );
+                        log.info("Initialized consumer group [{}] on stream [{}]", consumerGroup, streamKey);
+                    } catch (Exception ex) {
+                        String msg = ex.getMessage();
+                        if (msg != null && (msg.contains("BUSYGROUP") || msg.contains("already exists"))) {
+                            log.debug("Consumer group [{}] already exists for stream [{}]", consumerGroup, streamKey);
+                        } else {
+                            log.warn("Notice during stream group initialization for [{}]: {}", streamKey, msg);
+                        }
+                    }
+                    return null;
+                });
+                groupInitialized.set(true);
+            } catch (Exception ex) {
+                log.warn("Could not ensure group [{}] exists on stream [{}]: {}", consumerGroup, streamKey, ex.getMessage());
+            }
+        }
+    }
+
+    private void quarantineMalformedMessage(RecordId recordId, Map<String, String> value, String reason) {
+        try {
+            log.warn("Quarantining malformed Redis stream message [{}] to [{}]: {}",
+                    recordId.getValue(), dlqStreamKey, reason);
+            Map<String, String> dlqEntry = new HashMap<>();
+            dlqEntry.put("originalMessageId", recordId.getValue());
+            dlqEntry.put("error", reason);
+            dlqEntry.put("quarantinedAt", Instant.now().toString());
+            redisTemplate.opsForStream().add(dlqStreamKey, dlqEntry);
+            redisTemplate.opsForStream().acknowledge(streamKey, consumerGroup, recordId);
+        } catch (Exception ex) {
+            log.error("Failed to quarantine malformed message [{}]", recordId.getValue(), ex);
+        }
+    }
+
+    public String getStreamKey() {
+        return streamKey;
+    }
+
+    public String getConsumerGroup() {
+        return consumerGroup;
+    }
+
+    public String getConsumerName() {
+        return consumerName;
+    }
+
+    public String getDlqStreamKey() {
+        return dlqStreamKey;
     }
 }

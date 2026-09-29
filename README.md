@@ -170,20 +170,24 @@ docker compose up --build -d
 |---|---|---|
 | `REDIS_HOST` | `localhost` | Redis server hostname (`redis` in Docker Compose) |
 | `REDIS_PORT` | `6379` | Redis server TCP port |
+| `REDIS_STREAM_NAME` | `adonis:execution:stream` | Redis Stream key name for execution jobs |
+| `REDIS_CONSUMER_GROUP` | `adonis-workers` | Redis consumer group name for worker coordination |
+| `REDIS_CONSUMER_NAME` | `worker-<uuid>` | Unique worker consumer name in the consumer group |
 | `WORKER_ENABLED` | `true` | Toggle execution worker polling loop (set `false` in tests) |
-| `EXECUTION_QUEUE_NAME` | `adonis:execution:queue` | Redis list queue key name for execution jobs |
-| `WORKER_POLL_TIMEOUT_MS` | `2000` | Redis blocking poll timeout (`BLPOP` / `leftPop`) in milliseconds |
+| `WORKER_POLL_TIMEOUT_MS` | `2000` | Stream read block timeout (`XREADGROUP`) in milliseconds |
+| `WORKER_PENDING_CLAIM_IDLE_MS` | `60000` | Minimum idle time before unacknowledged pending messages are reclaimed from crashed workers |
+| `WORKER_STALE_EXECUTION_TIMEOUT_MS` | `300000` | Stale `RUNNING` execution timeout beyond which abandoned executions are marked `FAILED` to prevent duplicate side effects |
 | `QUEUE_TYPE` | `redis` | Queue backend provider (`redis` for production, `in-memory` for tests) |
 
 ---
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0 through Phase 7 — Operational)**:
+- **Current (Phase 0 through Phase 7.1 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users`, `workflows`, and `workflow_executions` collections)
-  - Redis 7.0 persistence queue (`adonis:execution:queue` list with `RPUSH` / `BLPOP`)
+  - Redis 7.0 Streams with Consumer Groups (`adonis:execution:stream` using `XADD`, `XREADGROUP`, `XACK`, `XPENDING`, `XCLAIM`)
   - Spring Security 6 stateless authentication with BCrypt password hashing
   - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`, `/api/executions/**`)
   - Workflow CRUD REST API (`POST`, `GET`, `GET {id}`, `PUT {id}`, `DELETE {id}`) with ownership-level query isolation
@@ -192,7 +196,11 @@ docker compose up --build -d
   - Fail-safe queue submission: gracefully transitions execution record to `FAILED` with sanitized messaging if Redis enqueuing fails, preventing permanently stuck `QUEUED` records
   - Queue abstraction: `ExecutionQueue` interface with `RedisExecutionQueue` (production) and `InMemoryExecutionQueue` (test isolation)
   - Autonomous `ExecutionWorker` process implementing Spring's `SmartLifecycle` for graceful shutdown
-  - Idempotent execution claims via atomic MongoDB `findAndModify` (`QUEUED` → `RUNNING`), guaranteeing exactly-once execution per job across concurrent worker instances
+  - Redis provides at-least-once message delivery, while MongoDB atomic execution claiming (`findAndModify`: `QUEUED` → `RUNNING`) provides idempotent workflow execution and prevents duplicate execution across workers
+  - Explicit message acknowledgement (`XACK`) executed strictly after terminal execution state (`SUCCESS` or `FAILED`) is safely persisted to MongoDB
+  - Worker crash recovery: automated reclamation of unacknowledged pending messages from the consumer group's Pending Entries List (PEL)
+  - Stale `RUNNING` execution reconciliation: timeout-based detection transitions abandoned executions to `FAILED`, preventing duplicate external HTTP side effects
+  - Safe malformed message quarantine: corrupted stream entries are moved to `adonis:execution:stream:dlq` and acknowledged to prevent poison-pill infinite loops
   - Workflow execution engine: deterministic topological sort, fail-fast behavior, data flow propagation, and structured node execution outcomes
   - Node executors: `TriggerNodeExecutor` (manual execution context), `HttpRequestNodeExecutor` (real HTTP requests via standard Java `HttpClient` for GET/POST/PUT/DELETE/PATCH), and `GenericNodeExecutor` (safe pass-through)
   - Persistent workflow execution records (`workflow_executions`) tracking status (`QUEUED` → `RUNNING` → `SUCCESS`/`FAILED`), timestamps, duration, and granular node executions
@@ -227,6 +235,7 @@ docker compose up --build -d
 - [x] **Phase 5 — Execution History + Logs**
 - [x] **Phase 6 — Retries + Failure Handling**
 - [x] **Phase 7 — Redis Asynchronous Workers**
+- [x] **Phase 7.1 — Redis Worker Reliability Hardening**
 - [ ] **Phase 8 — Scheduling + Webhooks**
 - [ ] **Phase 9 — AI Nodes**
 - [ ] **Phase 10 — Automated Testing + Testcontainers**

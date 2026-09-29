@@ -1,5 +1,6 @@
 package com.adonis.queue;
 
+import com.adonis.exception.WorkflowValidationException;
 import com.adonis.execution.*;
 import com.adonis.model.NodeExecution;
 import com.adonis.model.NodeExecutionAttempt;
@@ -19,6 +20,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -49,6 +51,7 @@ class ExecutionWorkerTest {
     private MongoTemplate mongoTemplate;
 
     private ExecutionWorker worker;
+    private static final long STALE_TIMEOUT_MS = 60000L; // 60 seconds for test
 
     @BeforeEach
     void setUp() {
@@ -59,283 +62,309 @@ class ExecutionWorkerTest {
                 validator,
                 engine,
                 mongoTemplate,
-                false, // disabled by default in test to avoid background loop
-                2000
+                false, // disabled background thread for deterministic tests
+                2000L,
+                10000L,
+                STALE_TIMEOUT_MS,
+                "test-worker"
         );
     }
 
     @Test
-    void processJob_ExecutionNotFound_SkipsWithoutCrashing() {
-        ExecutionJob job = new ExecutionJob("exec-missing", "wf-1", "user-1", "manual", Instant.now());
+    void processJob_ExecutionNotFound_AcknowledgesOrphanAndSkipsWithoutCrashing() {
+        QueuedJobMessage message = new QueuedJobMessage("msg-1",
+                new ExecutionJob("exec-missing", "wf-1", "user-1", "manual", Instant.now()));
         when(executionRepository.findById("exec-missing")).thenReturn(Optional.empty());
 
-        boolean result = worker.processJob(job);
+        boolean result = worker.processJob(message);
 
         assertFalse(result);
+        verify(queue).acknowledge("msg-1");
         verify(mongoTemplate, never()).findAndModify(any(), any(), any(), eq(WorkflowExecution.class));
         verify(engine, never()).execute(any(), any(), any(), any());
     }
 
     @Test
-    void processJob_AlreadyRunning_SkipsDuplicateExecution() {
-        ExecutionJob job = new ExecutionJob("exec-running", "wf-1", "user-1", "manual", Instant.now());
+    void processJob_AlreadyRunning_NotStale_SkipsWithoutExecutingOrAcknowledging() {
+        // Started 10 seconds ago (well within 60s timeout)
+        Instant recentStart = Instant.now().minus(10, ChronoUnit.SECONDS);
         WorkflowExecution exec = new WorkflowExecution("exec-running", "wf-1", "user-1",
-                ExecutionStatus.RUNNING, "manual", Instant.now(), null, null, List.of(), null);
+                ExecutionStatus.RUNNING, "manual", recentStart, null, null, List.of(), null);
         when(executionRepository.findById("exec-running")).thenReturn(Optional.of(exec));
 
-        boolean result = worker.processJob(job);
+        QueuedJobMessage message = new QueuedJobMessage("msg-2",
+                new ExecutionJob("exec-running", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
 
         assertFalse(result);
+        verify(queue, never()).acknowledge(anyString());
         verify(mongoTemplate, never()).findAndModify(any(), any(), any(), eq(WorkflowExecution.class));
         verify(engine, never()).execute(any(), any(), any(), any());
     }
 
     @Test
-    void processJob_AlreadyCompletedSuccess_SkipsDuplicateExecution() {
-        ExecutionJob job = new ExecutionJob("exec-success", "wf-1", "user-1", "manual", Instant.now());
+    void processJob_AlreadyRunning_Stale_MarksFailedAndAcknowledgesToPreventDuplicateSideEffects() {
+        // Started 5 minutes ago (well past 60s stale timeout)
+        Instant staleStart = Instant.now().minus(300, ChronoUnit.SECONDS);
+        WorkflowExecution exec = new WorkflowExecution("exec-stale", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", staleStart, null, null, List.of(), null);
+        when(executionRepository.findById("exec-stale")).thenReturn(Optional.of(exec));
+
+        QueuedJobMessage message = new QueuedJobMessage("msg-stale",
+                new ExecutionJob("exec-stale", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
+
+        assertFalse(result);
+        // Marked FAILED in repository
+        assertEquals(ExecutionStatus.FAILED, exec.getStatus());
+        assertTrue(exec.getError().contains("Execution timed out or processing worker terminated"));
+        verify(executionRepository).save(exec);
+        // Acknowledged from Redis stream
+        verify(queue).acknowledge("msg-stale");
+        // No duplicate node execution attempted!
+        verify(engine, never()).execute(any(), any(), any(), any());
+    }
+
+    @Test
+    void processJob_AlreadyCompletedSuccess_AcknowledgesDuplicateWithoutReExecuting() {
         WorkflowExecution exec = new WorkflowExecution("exec-success", "wf-1", "user-1",
                 ExecutionStatus.SUCCESS, "manual", Instant.now(), Instant.now(), 50L, List.of(), null);
         when(executionRepository.findById("exec-success")).thenReturn(Optional.of(exec));
 
-        boolean result = worker.processJob(job);
+        QueuedJobMessage message = new QueuedJobMessage("msg-dup-success",
+                new ExecutionJob("exec-success", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
 
         assertFalse(result);
+        verify(queue).acknowledge("msg-dup-success");
+        verify(mongoTemplate, never()).findAndModify(any(), any(), any(), eq(WorkflowExecution.class));
+        verify(engine, never()).execute(any(), any(), any(), any());
+    }
+
+    @Test
+    void processJob_AlreadyCompletedFailed_AcknowledgesDuplicateWithoutReExecuting() {
+        WorkflowExecution exec = new WorkflowExecution("exec-failed", "wf-1", "user-1",
+                ExecutionStatus.FAILED, "manual", Instant.now(), Instant.now(), 50L, List.of(), "Prior error");
+        when(executionRepository.findById("exec-failed")).thenReturn(Optional.of(exec));
+
+        QueuedJobMessage message = new QueuedJobMessage("msg-dup-failed",
+                new ExecutionJob("exec-failed", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
+
+        assertFalse(result);
+        verify(queue).acknowledge("msg-dup-failed");
         verify(mongoTemplate, never()).findAndModify(any(), any(), any(), eq(WorkflowExecution.class));
         verify(engine, never()).execute(any(), any(), any(), any());
     }
 
     @Test
     void processJob_ConcurrentWorkerClaimsFirst_SkipsGracefully() {
-        ExecutionJob job = new ExecutionJob("exec-queued", "wf-1", "user-1", "manual", Instant.now());
         WorkflowExecution queuedExec = WorkflowExecution.queued("wf-1", "user-1", "manual");
         queuedExec.setId("exec-queued");
-
         when(executionRepository.findById("exec-queued")).thenReturn(Optional.of(queuedExec));
-        // Atomic findAndModify returns null when another worker modified status concurrently
+
+        // Atomic findAndModify returns null when another worker raced and claimed it first
         when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(WorkflowExecution.class)))
                 .thenReturn(null);
 
-        boolean result = worker.processJob(job);
+        QueuedJobMessage message = new QueuedJobMessage("msg-race",
+                new ExecutionJob("exec-queued", "wf-1", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
 
         assertFalse(result);
+        verify(queue, never()).acknowledge("msg-race");
         verify(engine, never()).execute(any(), any(), any(), any());
     }
 
     @Test
-    void processJob_WorkflowNotFound_MarksExecutionFailed() {
-        ExecutionJob job = new ExecutionJob("exec-1", "wf-missing", "user-1", "manual", Instant.now());
+    void processJob_WorkflowNotFound_MarksExecutionFailedAndAcknowledges() {
         WorkflowExecution queuedExec = WorkflowExecution.queued("wf-missing", "user-1", "manual");
-        queuedExec.setId("exec-1");
+        queuedExec.setId("exec-wf-missing");
+        when(executionRepository.findById("exec-wf-missing")).thenReturn(Optional.of(queuedExec));
 
-        WorkflowExecution claimed = WorkflowExecution.queued("wf-missing", "user-1", "manual");
-        claimed.setId("exec-1");
-        claimed.markRunning(Instant.now());
-
-        when(executionRepository.findById("exec-1")).thenReturn(Optional.of(queuedExec));
+        WorkflowExecution runningExec = new WorkflowExecution("exec-wf-missing", "wf-missing", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now(), null, null, List.of(), null);
         when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(WorkflowExecution.class)))
-                .thenReturn(claimed);
+                .thenReturn(runningExec);
+
         when(workflowRepository.findById("wf-missing")).thenReturn(Optional.empty());
 
-        boolean result = worker.processJob(job);
+        QueuedJobMessage message = new QueuedJobMessage("msg-wf-missing",
+                new ExecutionJob("exec-wf-missing", "wf-missing", "user-1", "manual", Instant.now()));
+
+        boolean result = worker.processJob(message);
 
         assertTrue(result);
-        assertEquals(ExecutionStatus.FAILED, claimed.getStatus());
-        assertTrue(claimed.getError().contains("Workflow not found"));
-        verify(executionRepository).save(claimed);
-        verify(engine, never()).execute(any(), any(), any(), any());
+        assertEquals(ExecutionStatus.FAILED, runningExec.getStatus());
+        assertTrue(runningExec.getError().contains("Workflow not found with id: wf-missing"));
+        verify(executionRepository).save(runningExec);
+        verify(queue).acknowledge("msg-wf-missing");
     }
 
     @Test
-    void processJob_ValidationFails_MarksExecutionFailed() {
-        ExecutionJob job = new ExecutionJob("exec-1", "wf-invalid", "user-1", "manual", Instant.now());
-        WorkflowExecution queuedExec = WorkflowExecution.queued("wf-invalid", "user-1", "manual");
-        queuedExec.setId("exec-1");
+    void processJob_ValidationFails_MarksExecutionFailedAndAcknowledges() {
+        WorkflowExecution queuedExec = WorkflowExecution.queued("wf-cycle", "user-1", "manual");
+        queuedExec.setId("exec-cycle");
+        when(executionRepository.findById("exec-cycle")).thenReturn(Optional.of(queuedExec));
 
-        WorkflowExecution claimed = WorkflowExecution.queued("wf-invalid", "user-1", "manual");
-        claimed.setId("exec-1");
-        claimed.markRunning(Instant.now());
+        WorkflowExecution runningExec = new WorkflowExecution("exec-cycle", "wf-cycle", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now(), null, null, List.of(), null);
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(WorkflowExecution.class)))
+                .thenReturn(runningExec);
 
-        Workflow workflow = new Workflow("wf-invalid", "user-1", "Invalid WF", null, null, List.of(), List.of(), null, null);
+        Workflow workflow = new Workflow("wf-cycle", "user-1", "Cycle WF", null, null, List.of(), List.of(), null, null);
+        when(workflowRepository.findById("wf-cycle")).thenReturn(Optional.of(workflow));
+        when(validator.validateAndOrder(workflow)).thenThrow(new WorkflowValidationException("Cycle detected"));
 
-        when(executionRepository.findById("exec-1")).thenReturn(Optional.of(queuedExec));
-        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(claimed);
-        when(workflowRepository.findById("wf-invalid")).thenReturn(Optional.of(workflow));
-        when(validator.validateAndOrder(workflow)).thenThrow(new com.adonis.exception.WorkflowValidationException("Cycle detected"));
+        QueuedJobMessage message = new QueuedJobMessage("msg-cycle",
+                new ExecutionJob("exec-cycle", "wf-cycle", "user-1", "manual", Instant.now()));
 
-        boolean result = worker.processJob(job);
+        boolean result = worker.processJob(message);
 
         assertTrue(result);
-        assertEquals(ExecutionStatus.FAILED, claimed.getStatus());
-        assertTrue(claimed.getError().contains("Workflow validation failed: Cycle detected"));
-        verify(executionRepository).save(claimed);
-        verify(engine, never()).execute(any(), any(), any(), any());
+        assertEquals(ExecutionStatus.FAILED, runningExec.getStatus());
+        assertTrue(runningExec.getError().contains("Workflow validation failed: Cycle detected"));
+        verify(executionRepository).save(runningExec);
+        verify(queue).acknowledge("msg-cycle");
     }
 
     @Test
-    void processJob_EngineSuccess_PersistsSuccessWithDurationAndNodes() {
-        Instant startTime = Instant.now().minusMillis(150);
-        ExecutionJob job = new ExecutionJob("exec-success-job", "wf-1", "user-1", "manual", startTime);
+    void processJob_EngineFailure_MarksExecutionFailedSanitizesErrorAndAcknowledges() {
+        WorkflowNode node = new WorkflowNode("node-1", "http", Map.of());
+        Workflow workflow = new Workflow("wf-fail", "user-1", "Fail WF", null, null, List.of(node), List.of(), null, null);
+        WorkflowExecution runningExec = new WorkflowExecution("exec-fail", "wf-fail", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now(), null, null, List.of(), null);
 
-        WorkflowExecution queuedExec = WorkflowExecution.queued("wf-1", "user-1", "manual");
-        queuedExec.setId("exec-success-job");
+        when(executionRepository.findById("exec-fail")).thenReturn(Optional.of(WorkflowExecution.queued("wf-fail", "user-1", "manual")));
+        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(runningExec);
+        when(workflowRepository.findById("wf-fail")).thenReturn(Optional.of(workflow));
+        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node));
 
-        WorkflowExecution claimed = WorkflowExecution.queued("wf-1", "user-1", "manual");
-        claimed.setId("exec-success-job");
-        claimed.markRunning(startTime);
+        WorkflowExecutionResult failureResult = WorkflowExecutionResult.failure(
+                "exec-fail",
+                "wf-fail",
+                Instant.now().minusMillis(50),
+                Instant.now(),
+                List.of(new NodeExecutionResult("node-1", "http", ExecutionStatus.FAILED,
+                        Instant.now().minusMillis(50), Instant.now(), 50L, Map.of(), Map.of(), "Bearer secret-token 500 error", 1, List.of())),
+                "Workflow failed: Bearer secret-token 500 error"
+        );
+        when(engine.execute(eq(workflow), any(), eq("user-1"), eq("exec-fail"))).thenReturn(failureResult);
 
-        WorkflowNode node1 = new WorkflowNode("node-1", "trigger", Map.of("triggerType", "manual"));
-        Workflow workflow = new Workflow("wf-1", "user-1", "Test WF", null, null, List.of(node1), List.of(), null, null);
+        QueuedJobMessage message = new QueuedJobMessage("msg-fail",
+                new ExecutionJob("exec-fail", "wf-fail", "user-1", "manual", Instant.now()));
 
-        Instant completedTime = Instant.now();
-        WorkflowExecutionResult engineResult = WorkflowExecutionResult.success(
-                "exec-success-job",
+        boolean result = worker.processJob(message);
+
+        assertTrue(result);
+        assertEquals(ExecutionStatus.FAILED, runningExec.getStatus());
+        // Verify sanitization
+        assertFalse(runningExec.getError().contains("secret-token"));
+        assertTrue(runningExec.getError().contains("[REDACTED]"));
+        verify(executionRepository).save(runningExec);
+        verify(queue).acknowledge("msg-fail");
+    }
+
+    @Test
+    void processJob_PersistenceFailure_DoesNotAcknowledgeMessage() {
+        WorkflowNode node = new WorkflowNode("node-1", "trigger", Map.of());
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, null, List.of(node), List.of(), null, null);
+        WorkflowExecution runningExec = new WorkflowExecution("exec-persist-fail", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now(), null, null, List.of(), null);
+
+        when(executionRepository.findById("exec-persist-fail")).thenReturn(Optional.of(WorkflowExecution.queued("wf-1", "user-1", "manual")));
+        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(runningExec);
+        when(workflowRepository.findById("wf-1")).thenReturn(Optional.of(workflow));
+        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node));
+
+        WorkflowExecutionResult successResult = WorkflowExecutionResult.success(
+                "exec-persist-fail",
                 "wf-1",
-                startTime,
-                completedTime,
-                List.of(NodeExecutionResult.success("node-1", "trigger", startTime, completedTime, Map.of("key", "val")))
+                Instant.now().minusMillis(20),
+                Instant.now(),
+                List.of(new NodeExecutionResult("node-1", "trigger", ExecutionStatus.SUCCESS,
+                        Instant.now().minusMillis(20), Instant.now(), 20L, Map.of(), Map.of(), null, 0, List.of()))
         );
+        when(engine.execute(any(), any(), any(), any())).thenReturn(successResult);
 
-        when(executionRepository.findById("exec-success-job")).thenReturn(Optional.of(queuedExec));
-        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(claimed);
-        when(workflowRepository.findById("wf-1")).thenReturn(Optional.of(workflow));
-        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node1));
-        when(engine.execute(workflow, List.of(node1), "user-1", "exec-success-job")).thenReturn(engineResult);
+        // MongoDB save throws exception
+        doThrow(new RuntimeException("MongoDB network timeout")).when(executionRepository).save(any(WorkflowExecution.class));
 
-        boolean result = worker.processJob(job);
+        QueuedJobMessage message = new QueuedJobMessage("msg-persist-fail",
+                new ExecutionJob("exec-persist-fail", "wf-1", "user-1", "manual", Instant.now()));
 
-        assertTrue(result);
-        assertEquals(ExecutionStatus.SUCCESS, claimed.getStatus());
-        assertNotNull(claimed.getCompletedAt());
-        assertNotNull(claimed.getDurationMs());
-        assertEquals(1, claimed.getNodeExecutions().size());
-        assertEquals("node-1", claimed.getNodeExecutions().get(0).getNodeId());
-        assertNull(claimed.getError());
-        verify(executionRepository).save(claimed);
+        assertThrows(RuntimeException.class, () -> worker.processJob(message));
+
+        // CRITICAL: Must NOT acknowledge message when persistence failed!
+        verify(queue, never()).acknowledge("msg-persist-fail");
     }
 
     @Test
-    void processJob_EngineFailure_PersistsFailureWithSanitizedError() {
-        Instant startTime = Instant.now().minusMillis(100);
-        ExecutionJob job = new ExecutionJob("exec-fail-job", "wf-1", "user-1", "manual", startTime);
+    void processJob_Success_PersistsSuccessAndAcknowledgesOnlyAfterPersistence() {
+        WorkflowNode node = new WorkflowNode("node-1", "trigger", Map.of());
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, null, List.of(node), List.of(), null, null);
+        WorkflowExecution runningExec = new WorkflowExecution("exec-success", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now(), null, null, List.of(), null);
 
-        WorkflowExecution queuedExec = WorkflowExecution.queued("wf-1", "user-1", "manual");
-        queuedExec.setId("exec-fail-job");
+        when(executionRepository.findById("exec-success")).thenReturn(Optional.of(WorkflowExecution.queued("wf-1", "user-1", "manual")));
+        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(runningExec);
+        when(workflowRepository.findById("wf-1")).thenReturn(Optional.of(workflow));
+        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node));
 
-        WorkflowExecution claimed = WorkflowExecution.queued("wf-1", "user-1", "manual");
-        claimed.setId("exec-fail-job");
-        claimed.markRunning(startTime);
-
-        WorkflowNode node1 = new WorkflowNode("node-1", "trigger", Map.of("triggerType", "manual"));
-        Workflow workflow = new Workflow("wf-1", "user-1", "Test WF", null, null, List.of(node1), List.of(), null, null);
-
-        Instant completedTime = Instant.now();
-        WorkflowExecutionResult engineResult = WorkflowExecutionResult.failure(
-                "exec-fail-job",
+        WorkflowExecutionResult successResult = WorkflowExecutionResult.success(
+                "exec-success",
                 "wf-1",
-                startTime,
-                completedTime,
-                List.of(NodeExecutionResult.failure("node-1", "trigger", startTime, completedTime, Map.of(), "HTTP 500 error")),
-                "Step node-1 failed with: HTTP 500 error"
+                Instant.now().minusMillis(30),
+                Instant.now(),
+                List.of(new NodeExecutionResult("node-1", "trigger", ExecutionStatus.SUCCESS,
+                        Instant.now().minusMillis(30), Instant.now(), 30L, Map.of(), Map.of(), null, 0, List.of()))
         );
+        when(engine.execute(eq(workflow), any(), eq("user-1"), eq("exec-success"))).thenReturn(successResult);
 
-        when(executionRepository.findById("exec-fail-job")).thenReturn(Optional.of(queuedExec));
-        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(claimed);
-        when(workflowRepository.findById("wf-1")).thenReturn(Optional.of(workflow));
-        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node1));
-        when(engine.execute(workflow, List.of(node1), "user-1", "exec-fail-job")).thenReturn(engineResult);
+        QueuedJobMessage message = new QueuedJobMessage("msg-success-1",
+                new ExecutionJob("exec-success", "wf-1", "user-1", "manual", Instant.now()));
 
-        boolean result = worker.processJob(job);
+        boolean result = worker.processJob(message);
 
         assertTrue(result);
-        assertEquals(ExecutionStatus.FAILED, claimed.getStatus());
-        assertEquals("Step node-1 failed with: HTTP 500 error", claimed.getError());
-        verify(executionRepository).save(claimed);
+        assertEquals(ExecutionStatus.SUCCESS, runningExec.getStatus());
+        verify(executionRepository).save(runningExec);
+        // Acknowledged after save
+        verify(queue).acknowledge("msg-success-1");
     }
 
     @Test
-    void processJob_UnexpectedEngineException_CatchesAndPersistsFailedWithoutCrashing() {
-        ExecutionJob job = new ExecutionJob("exec-crash", "wf-1", "user-1", "manual", Instant.now());
+    void recoverPendingJobs_ClaimsAndProcessesUnacknowledgedJobs() {
+        QueuedJobMessage recoveredMsg = new QueuedJobMessage("rec-1",
+                new ExecutionJob("exec-rec", "wf-1", "user-1", "manual", Instant.now()), 2);
+
+        when(queue.claimPending(any(java.time.Duration.class), eq(10))).thenReturn(List.of(recoveredMsg));
 
         WorkflowExecution queuedExec = WorkflowExecution.queued("wf-1", "user-1", "manual");
-        queuedExec.setId("exec-crash");
+        queuedExec.setId("exec-rec");
+        when(executionRepository.findById("exec-rec")).thenReturn(Optional.of(queuedExec));
 
-        WorkflowExecution claimed = WorkflowExecution.queued("wf-1", "user-1", "manual");
-        claimed.setId("exec-crash");
-        claimed.markRunning(Instant.now());
+        WorkflowExecution runningExec = new WorkflowExecution("exec-rec", "wf-1", "user-1",
+                ExecutionStatus.RUNNING, "manual", Instant.now(), null, null, List.of(), null);
+        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(runningExec);
 
-        WorkflowNode node1 = new WorkflowNode("node-1", "trigger", Map.of());
-        Workflow workflow = new Workflow("wf-1", "user-1", "Test WF", null, null, List.of(node1), List.of(), null, null);
-
-        when(executionRepository.findById("exec-crash")).thenReturn(Optional.of(queuedExec));
-        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(claimed);
+        WorkflowNode node = new WorkflowNode("node-1", "trigger", Map.of());
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, null, List.of(node), List.of(), null, null);
         when(workflowRepository.findById("wf-1")).thenReturn(Optional.of(workflow));
-        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node1));
-        when(engine.execute(any(), any(), any(), any())).thenThrow(new NullPointerException("Unexpected engine NPE"));
+        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node));
+        when(engine.execute(any(), any(), any(), any())).thenReturn(WorkflowExecutionResult.success(
+                "exec-rec", "wf-1", Instant.now().minusMillis(10), Instant.now(), List.of()
+        ));
 
-        boolean result = worker.processJob(job);
+        worker.recoverPendingJobs();
 
-        assertTrue(result);
-        assertEquals(ExecutionStatus.FAILED, claimed.getStatus());
-        assertTrue(claimed.getError().contains("Execution engine failure"));
-        verify(executionRepository).save(claimed);
-    }
-
-    @Test
-    void processJob_Phase6RetryCompatibility_PersistsAttemptsAndRetryCount() {
-        Instant startTime = Instant.now().minusMillis(200);
-        ExecutionJob job = new ExecutionJob("exec-retried", "wf-1", "user-1", "manual", startTime);
-
-        WorkflowExecution queuedExec = WorkflowExecution.queued("wf-1", "user-1", "manual");
-        queuedExec.setId("exec-retried");
-
-        WorkflowExecution claimed = WorkflowExecution.queued("wf-1", "user-1", "manual");
-        claimed.setId("exec-retried");
-        claimed.markRunning(startTime);
-
-        WorkflowNode node1 = new WorkflowNode("node-1", "httpRequest", Map.of());
-        Workflow workflow = new Workflow("wf-1", "user-1", "Retry WF", null, null, List.of(node1), List.of(), null, null);
-
-        NodeExecutionAttempt attempt1 = new NodeExecutionAttempt(1, ExecutionStatus.FAILED, startTime, startTime.plusMillis(50), 50L, Map.of(), Map.of(), "HTTP 503");
-        NodeExecutionAttempt attempt2 = new NodeExecutionAttempt(2, ExecutionStatus.SUCCESS, startTime.plusMillis(100), startTime.plusMillis(150), 50L, Map.of(), Map.of("res", "ok"), null);
-
-        NodeExecutionResult nodeResult = new NodeExecutionResult(
-                "node-1",
-                "httpRequest",
-                ExecutionStatus.SUCCESS,
-                startTime,
-                startTime.plusMillis(150),
-                150L,
-                Map.of(),
-                Map.of("res", "ok"),
-                null,
-                1,
-                List.of(attempt1, attempt2)
-        );
-
-        WorkflowExecutionResult engineResult = WorkflowExecutionResult.success(
-                "exec-retried",
-                "wf-1",
-                startTime,
-                startTime.plusMillis(150),
-                List.of(nodeResult)
-        );
-
-        when(executionRepository.findById("exec-retried")).thenReturn(Optional.of(queuedExec));
-        when(mongoTemplate.findAndModify(any(), any(), any(), eq(WorkflowExecution.class))).thenReturn(claimed);
-        when(workflowRepository.findById("wf-1")).thenReturn(Optional.of(workflow));
-        when(validator.validateAndOrder(workflow)).thenReturn(List.of(node1));
-        when(engine.execute(workflow, List.of(node1), "user-1", "exec-retried")).thenReturn(engineResult);
-
-        boolean result = worker.processJob(job);
-
-        assertTrue(result);
-        assertEquals(ExecutionStatus.SUCCESS, claimed.getStatus());
-        assertEquals(1, claimed.getNodeExecutions().size());
-        NodeExecution persistedNode = claimed.getNodeExecutions().get(0);
-        assertEquals(1, persistedNode.getRetryCount());
-        assertEquals(2, persistedNode.getAttempts().size());
-        assertEquals(1, persistedNode.getAttempts().get(0).getAttemptNumber());
-        assertEquals(2, persistedNode.getAttempts().get(1).getAttemptNumber());
-        verify(executionRepository).save(claimed);
+        verify(queue).claimPending(any(java.time.Duration.class), eq(10));
+        verify(executionRepository).save(runningExec);
+        verify(queue).acknowledge("rec-1");
     }
 }

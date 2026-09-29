@@ -283,10 +283,10 @@ This document records the architectural and technical decisions made during the 
   - **Minimalist Queue Payloads (`ExecutionJob`)**: Rather than serializing entire workflow documents and node configurations into the Redis queue, `ExecutionJob` contains only essential identifiers (`executionId`, `workflowId`, `userId`, `triggerType`, `queuedAt`). The worker resolves authoritative workflow definitions and execution state directly from MongoDB at execution time. This prevents document stale-reads, eliminates serialization version skew, keeps Redis memory overhead negligible, and guarantees that credentials or sensitive workflow definitions are never serialized into transit queues.
   - **Strict Separation of Queue Responsibilities vs. Node Retries**: Redis is strictly responsible for message delivery and job dispatching. Redis does NOT perform node retries or workflow step recovery. Node-level retries remain strictly within the domain of Phase 6 `RetryPolicy` and `FailureClassifier` inside the execution engine, where topological dependencies and step backoffs are understood.
   - **Queue Abstraction (`ExecutionQueue`)**: To prevent tight coupling to Redis specifics, an `ExecutionQueue` interface was introduced. `RedisExecutionQueue` implements list-based queueing (`adonis:execution:queue`) using Spring Data Redis for production, while `InMemoryExecutionQueue` provides an in-memory queue fallback that enables running unit, integration, and CI test suites without requiring an external Redis daemon on `localhost:6379`.
-  - **Queue Delivery Semantics & Atomic State Idempotency**: Redis list operations (`RPUSH` / `BLPOP`) exhibit at-least-once delivery semantics under crash recovery. To guarantee idempotency and prevent duplicate workflow executions across concurrent workers:
+  - **Queue Delivery Semantics & Atomic State Idempotency**: Redis provides at-least-once message delivery, while MongoDB atomic execution claiming provides idempotent workflow execution and prevents duplicate execution across workers.
     1. Executions are initially persisted in MongoDB with status `QUEUED`.
     2. Before running a job, the worker queries MongoDB atomically via `mongoTemplate.findAndModify` with `Criteria.where("_id").is(executionId).and("status").is(ExecutionStatus.QUEUED)` and updates `status = RUNNING, startedAt = now()`.
-    3. Exactly one worker succeeds in transitioning the state. If the query returns `null` (because another worker claimed it or it was already processed), the duplicate job is safely discarded without executing node operations.
+    3. Only one worker succeeds in transitioning the state. If the query returns `null` (because another worker claimed it or it was already processed), the duplicate job is safely discarded without executing node operations.
   - **Fail-Safe Queue Submission**: If MongoDB creates the `QUEUED` execution record successfully but Redis enqueuing subsequently fails (e.g. Redis network outage), the system catches the exception, immediately transitions the execution record to `FAILED` with a sanitized message, and returns HTTP 500 without leaking Redis connection strings, preventing executions permanently stuck in `QUEUED`.
   - **Graceful Lifecycle Management**: `ExecutionWorker` implements Spring's `SmartLifecycle`. On application termination or container SIGTERM, the worker ceases polling, allows active executions to finish, and interrupts threads cleanly without corrupting execution state.
   - **Non-Blocking API Contract (`202 Accepted`)**: `POST /api/workflows/{id}/execute` authenticates the user, verifies workflow ownership, validates graph structure, creates the `QUEUED` record, enqueues the job, and immediately returns `202 Accepted` with `{ "executionId": "...", "workflowId": "...", "status": "QUEUED" }`.
@@ -294,5 +294,38 @@ This document records the architectural and technical decisions made during the 
 * **Consequences**:
   - Positive: REST API execution requests respond in sub-50 milliseconds regardless of workflow duration or retries; zero HTTP timeout risk; multiple worker instances can consume concurrently from Redis without duplicate execution; existing Phase 4 execution engine, Phase 5 history, and Phase 6 retries remain 100% intact and verified; test suites remain deterministic and hermetic without live Redis dependencies.
   - Trade-off: Asynchronous execution requires client polling to inspect live execution state (WebSockets/SSE deferred to future phases). Additional infrastructure container (Redis 7) required for production orchestration.
+
+---
+
+## Phase 7.1: Redis Worker Reliability Hardening
+
+### ADR-021: Redis Streams with Consumer Groups, Message Acknowledgement (XACK), Pending Message Recovery, and Stale Execution Reconciliation
+* **Date**: 2026-09-29
+* **Status**: Accepted
+* **Context**:
+  In Phase 7, the queue used basic Redis list primitives (`RPUSH` and `BLPOP` / `leftPop`). The key limitation was destructive dequeue: once a worker popped a job from the list via `BLPOP`, the message was permanently removed from Redis. If the worker process abruptly crashed or was killed before completing and persisting execution state, the job disappeared from Redis while MongoDB remained stranded in `RUNNING` status with no mechanism to detect or recover it.
+* **Decision**:
+  - **Transition to Redis Streams with Consumer Groups**:
+    Replace Redis lists with Redis Streams (`adonis:execution:stream`) and a consumer group (`adonis-workers`). Producers publish via `XADD`. Workers consume non-destructively via `XREADGROUP` (`ReadOffset.lastConsumed()`). Delivered messages remain tracked in Redis in the group's Pending Entries List (PEL) until explicitly acknowledged with `XACK`.
+  - **Strict Acknowledgement Timing (`XACK`)**:
+    Workers invoke `XACK` **only after** the execution record has been successfully persisted to MongoDB in a terminal state (`SUCCESS` or `FAILED`). If MongoDB persistence throws an exception or network error, the message is NOT acknowledged, remaining in the PEL for subsequent recovery.
+  - **Worker Crash Recovery via Pending Entries List (PEL)**:
+    Healthy workers periodically inspect pending unacknowledged entries (`XPENDING`) for the consumer group. If an entry's idle time exceeds `WORKER_PENDING_CLAIM_IDLE_MS` (default 60,000ms), indicating the assigning worker crashed, workers reclaim ownership via `XCLAIM` and reprocess the job.
+  - **MongoDB Atomic Execution Claiming & Idempotency**:
+    Redis provides at-least-once message delivery, while MongoDB atomic execution claiming provides idempotent workflow execution and prevents duplicate execution across workers. When redelivered:
+    1. If MongoDB execution record is missing (orphaned job): safe warning is logged and the message is acknowledged to clear the queue.
+    2. If status is already `SUCCESS` or `FAILED`: the duplicate message is safely acknowledged without re-running any nodes.
+    3. If status is `RUNNING`: the worker inspects elapsed execution time (`startedAt`). If elapsed time exceeds `WORKER_STALE_EXECUTION_TIMEOUT_MS` (default 300,000ms), the execution is transitioned to `FAILED` with an explicit diagnostic message and acknowledged. If not yet stale, the worker skips re-execution to prevent duplicate external HTTP side effects.
+    4. If status is `QUEUED`: the worker atomically transitions `QUEUED -> RUNNING` via `mongoTemplate.findAndModify`.
+  - **Safe Malformed Message Quarantine**:
+    If a stream entry contains invalid JSON or cannot be deserialized, the worker quarantines the record to a dedicated dead-letter stream (`adonis:execution:stream:dlq`) and acknowledges the main stream entry. This prevents poison pills from causing infinite crash/redelivery loops while preserving payloads for offline diagnosis without logging secrets.
+  - **Graceful Shutdown**:
+    On application stop, the worker thread is interrupted and allowed to finish in-flight processing. If the process terminates before `XACK`, the message remains safely in the PEL and will be recovered by remaining or restarted workers.
+  - **Infrastructure Simplicity**:
+    Redis Streams native consumer groups provide the required at-least-once delivery, unacknowledged message tracking, and crash recovery without introducing heavyweight external brokers such as Apache Kafka or RabbitMQ.
+* **Consequences**:
+  - Positive: Zero risk of silent job loss under worker crashes; at-least-once delivery guarantee combined with MongoDB atomic idempotency prevents duplicate HTTP side effects; corrupted messages are quarantined without crashing the worker; deterministic test suite remains completely hermetic via `InMemoryExecutionQueue`.
+  - Trade-off: Recovered `RUNNING` executions that exceed the stale timeout are marked `FAILED` rather than automatically re-executed, prioritizing idempotency and preventing duplicate external HTTP requests over speculative replay.
+
 
 

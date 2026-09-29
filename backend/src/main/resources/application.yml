@@ -18,8 +18,13 @@ adonis:
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
   worker:
     enabled: ${WORKER_ENABLED:true}
-    queue-name: ${EXECUTION_QUEUE_NAME:adonis:execution:queue}
+    stream-name: ${REDIS_STREAM_NAME:adonis:execution:stream}
+    consumer-group: ${REDIS_CONSUMER_GROUP:adonis-workers}
+    consumer-name: ${REDIS_CONSUMER_NAME:}
     poll-timeout-ms: ${WORKER_POLL_TIMEOUT_MS:2000}
+    pending-claim-idle-ms: ${WORKER_PENDING_CLAIM_IDLE_MS:60000}
+    stale-execution-timeout-ms: ${WORKER_STALE_EXECUTION_TIMEOUT_MS:300000}
+    queue-name: ${EXECUTION_QUEUE_NAME:adonis:execution:stream}
   queue:
     type: ${QUEUE_TYPE:redis}
 
