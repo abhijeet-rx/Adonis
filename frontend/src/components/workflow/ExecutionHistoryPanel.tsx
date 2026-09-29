@@ -177,6 +177,7 @@ export const ExecutionHistoryPanel: React.FC<ExecutionHistoryPanelProps> = ({
           history.map((item) => {
             const isSuccess = item.status === 'SUCCESS';
             const isRunning = item.status === 'RUNNING';
+            const isQueued = item.status === 'QUEUED';
             const execId = item.id || item.executionId || '';
             const isOpening = loadingExecutionId === execId;
 
@@ -189,6 +190,8 @@ export const ExecutionHistoryPanel: React.FC<ExecutionHistoryPanelProps> = ({
                     ? 'bg-slate-900/50 hover:bg-slate-900/90 border-slate-800 hover:border-emerald-500/40'
                     : isRunning
                     ? 'bg-amber-950/20 hover:bg-amber-950/40 border-amber-900/40'
+                    : isQueued
+                    ? 'bg-indigo-950/20 hover:bg-indigo-950/40 border-indigo-900/40'
                     : 'bg-rose-950/20 hover:bg-rose-950/40 border-rose-900/40 hover:border-rose-700/60'
                 }`}
               >
@@ -203,6 +206,11 @@ export const ExecutionHistoryPanel: React.FC<ExecutionHistoryPanelProps> = ({
                       <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
                         <RefreshCw className="w-3 h-3 animate-spin" />
                         RUNNING
+                      </span>
+                    ) : isQueued ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                        <Clock className="w-3 h-3 animate-pulse" />
+                        QUEUED
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-400 bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">

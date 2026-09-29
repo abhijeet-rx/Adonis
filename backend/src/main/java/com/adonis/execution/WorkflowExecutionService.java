@@ -1,5 +1,6 @@
 package com.adonis.execution;
 
+import com.adonis.dto.ExecuteWorkflowResponse;
 import com.adonis.dto.ExecutionResponse;
 import com.adonis.dto.ExecutionSummaryResponse;
 import com.adonis.dto.PageResponse;
@@ -9,9 +10,15 @@ import com.adonis.model.NodeExecution;
 import com.adonis.model.Workflow;
 import com.adonis.model.WorkflowExecution;
 import com.adonis.model.WorkflowNode;
+import com.adonis.queue.ExecutionJob;
+import com.adonis.queue.ExecutionQueue;
+import com.adonis.queue.QueueSubmissionException;
 import com.adonis.repository.WorkflowExecutionRepository;
 import com.adonis.repository.WorkflowRepository;
 import com.adonis.util.SecretRedactor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -22,20 +29,81 @@ import java.util.*;
 @Service
 public class WorkflowExecutionService {
 
+    private static final Logger log = LoggerFactory.getLogger(WorkflowExecutionService.class);
+
     private final WorkflowRepository workflowRepository;
     private final WorkflowExecutionValidator validator;
     private final WorkflowExecutionEngine engine;
     private final WorkflowExecutionRepository executionRepository;
+    private final ExecutionQueue executionQueue;
 
     public WorkflowExecutionService(
             WorkflowRepository workflowRepository,
             WorkflowExecutionValidator validator,
             WorkflowExecutionEngine engine,
             WorkflowExecutionRepository executionRepository) {
+        this(workflowRepository, validator, engine, executionRepository, null);
+    }
+
+    @Autowired
+    public WorkflowExecutionService(
+            WorkflowRepository workflowRepository,
+            WorkflowExecutionValidator validator,
+            WorkflowExecutionEngine engine,
+            WorkflowExecutionRepository executionRepository,
+            @Autowired(required = false) ExecutionQueue executionQueue) {
         this.workflowRepository = Objects.requireNonNull(workflowRepository, "WorkflowRepository must not be null");
         this.validator = Objects.requireNonNull(validator, "WorkflowExecutionValidator must not be null");
         this.engine = Objects.requireNonNull(engine, "WorkflowExecutionEngine must not be null");
         this.executionRepository = Objects.requireNonNull(executionRepository, "WorkflowExecutionRepository must not be null");
+        this.executionQueue = executionQueue;
+    }
+
+    /**
+     * Asynchronously enqueues a workflow execution:
+     * 1. Authenticates & verifies ownership
+     * 2. Validates workflow graph structure upfront
+     * 3. Creates execution record in QUEUED status
+     * 4. Enqueues job to Redis execution queue
+     * 5. Handles queue failure gracefully by marking execution FAILED in MongoDB
+     * 6. Returns 202 Accepted response payload
+     *
+     * @param workflowId the workflow ID
+     * @param userId the authenticated user ID
+     * @return asynchronous ExecuteWorkflowResponse containing executionId, workflowId, and QUEUED status
+     */
+    public ExecuteWorkflowResponse enqueueExecution(String workflowId, String userId) {
+        Workflow workflow = workflowRepository.findByIdAndUserId(workflowId, userId)
+                .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found with id: " + workflowId));
+
+        List<WorkflowNode> executionOrder = validator.validateAndOrder(workflow);
+        String triggerType = determineTriggerType(executionOrder);
+
+        // 1. Create and persist initial execution record (QUEUED)
+        WorkflowExecution execution = WorkflowExecution.queued(workflow.getId(), userId, triggerType);
+        execution = executionRepository.save(execution);
+        String executionId = execution.getId();
+
+        // 2. Enqueue job
+        if (executionQueue == null) {
+            log.error("ExecutionQueue is not configured; cannot enqueue execution: {}", executionId);
+            execution.markQueueFailed("Execution queue service is unavailable");
+            executionRepository.save(execution);
+            throw new QueueSubmissionException("Execution queue is not configured");
+        }
+
+        ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), userId, triggerType, Instant.now());
+        try {
+            executionQueue.enqueue(job);
+            log.info("Workflow execution enqueued: executionId={}, workflowId={}", executionId, workflow.getId());
+        } catch (Exception ex) {
+            log.error("Failed to enqueue execution job for executionId: {}", executionId, ex);
+            execution.markQueueFailed("Failed to queue workflow execution");
+            executionRepository.save(execution);
+            throw new QueueSubmissionException("Failed to enqueue workflow execution", ex);
+        }
+
+        return ExecuteWorkflowResponse.queued(executionId, workflow.getId());
     }
 
     /**

@@ -16,33 +16,40 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-## 2. Current Architecture (Phase 5 Operational)
+## 2. Current Architecture (Phase 7 Operational)
 
-In Phase 5, the operational system topology provides an interactive visual workflow canvas integrated with persistent workflow definitions, synchronous in-process workflow execution, and persistent execution history & logs:
+In Phase 7, the operational system topology provides an interactive visual workflow canvas integrated with persistent workflow definitions, asynchronous Redis queueing, autonomous worker processes, and persistent execution history:
 
 ```text
 React (Vite + TypeScript + Tailwind + @xyflow/react)
    ├── Visual Workflow Builder (Canvas, MiniMap, Controls, Background)
    ├── Node Palette (Trigger, HTTP Request, Generic) & Node Config Drawer
    ├── Run Workflow Action, Execution Results Modal & Execution History Panel
-   └── Bidirectional Graph Adapter (workflowAdapter.ts)
-   ↓ HTTP / JSON (Bearer JWT, CORS-enabled)
+   └── Polling Client (1.5s interval until SUCCESS or FAILED)
+   ↓ HTTP / JSON (Bearer JWT, CORS-enabled, 202 Accepted)
 Spring Boot REST API (Java 21, Spring Boot 3.3.4)
    ↓
 Spring Security + JWT (Stateless filter, BCrypt password encoder)
    ↓
 Service Layer (AuthService, UserService, WorkflowService, WorkflowExecutionService)
+   ↓ Enqueue ExecutionJob (executionId, workflowId, userId, triggerType, queuedAt)
+ExecutionQueue Abstraction
    ↓
-Execution Engine (Kahn's Topological Sort, Fail-Fast In-Process Sequential Runner)
+Redis 7 Queue (RPUSH adonis:execution:queue)
+   ↓
+ExecutionWorker (BLPOP / leftPop, SmartLifecycle, Atomic findAndModify QUEUED -> RUNNING)
+   ↓
+Execution Engine (Unchanged Core: Kahn's Topological Sort, RetryPolicy, Fail-Fast Runner)
    ├── WorkflowExecutionValidator (7-rule graph & trigger validation)
    ├── WorkflowExecutionEngine (sequential execution & upstream output resolution)
    ├── NodeExecutors: TriggerNodeExecutor, HttpRequestNodeExecutor, GenericNodeExecutor
+   ├── RetryPolicy (Phase 6 exponential backoff, attempt tracking, and failure classification)
    └── SecretRedactor (deep sanitization of sensitive headers, tokens, and credentials)
    ↓
 MongoDB (Spring Data MongoDB, 7.0 container)
    ├── Collection: users (unique index on lowercase email)
    ├── Collection: workflows (nodes with positions & edges with handles, indexed by userId)
-   └── Collection: workflow_executions (status, timestamps, duration, nodeExecutions, indexed by userId, workflowId, startedAt)
+   └── Collection: workflow_executions (status QUEUED/RUNNING/SUCCESS/FAILED, timestamps, duration, nodeExecutions)
 ```
 
 ### Component Status (Implemented vs. Deferred)
@@ -57,10 +64,10 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Protected User Profile API** | **Operational** (`GET /api/users/me`) | Phase 1 (Completed) |
 | **Workflow CRUD APIs** | **Operational** (`POST/GET/PUT/DELETE /api/workflows`) | Phase 2 (Completed) |
 | **React Flow Visual Canvas** | **Operational** (`@xyflow/react` v12 visual builder) | Phase 3 (Completed) |
-| **Workflow Execution Engine** | **Operational** (Topological DAG, in-process, fail-fast) | Phase 4 (Completed) |
+| **Workflow Execution Engine** | **Operational** (Topological DAG, fail-fast core) | Phase 4 (Completed) |
 | **Execution History & Logs** | **Operational** (Persistent records, skipped nodes, redacting, pagination) | Phase 5 (Completed) |
-| **Retries & Failure Handling** | **Operational** (In-process exponential backoff, failure classification, attempt tracking) | Phase 6 (Completed) |
-| **Redis Asynchronous Workers** | *NOT Implemented* | Phase 7 (Redis Asynchronous Workers) |
+| **Retries & Failure Handling** | **Operational** (Exponential backoff, failure classification, attempt tracking) | Phase 6 (Completed) |
+| **Redis Asynchronous Workers** | **Operational** (Redis 7, ExecutionQueue, ExecutionWorker, 202 Accepted, Idempotency) | Phase 7 (Completed) |
 | **Scheduling & Webhooks** | *NOT Implemented* | Phase 8 (Scheduling + Webhooks) |
 | **AI Intelligent Nodes** | *NOT Implemented* | Phase 9 (AI Nodes) |
 | **Automated Testing & Testcontainers** | *NOT Implemented* | Phase 10 (Testcontainers deferred to Phase 10) |
@@ -309,5 +316,60 @@ backend/src/main/java/com/adonis/
 | `frontend` | 80 (prod) / 5173 (dev) | 5173 | HTTP | **Operational** | User Interface & Workflow CRUD Dashboard |
 | `backend` | 8080 | 8080 | HTTP | **Operational** | REST API & Security Engine |
 | `mongodb` | 27017 | 27017 | TCP | **Operational** | MongoDB 7.0 User & Workflow Persistence |
-| `redis` | 6379 | 6379 | TCP | *Deferred (Phase 7)* | Async job queue & worker tasks |
+| `redis` | 6379 | 6379 | TCP | **Operational** | Redis 7 persistent execution queue |
+
+---
+
+## 9. Phase 7: Redis Asynchronous Workers Architecture
+
+### 9.1 Architectural Flow
+
+```text
+                    ┌─────────────────┐
+                    │   REST API      │
+                    │ (POST /execute) │
+                    └────────┬────────┘
+                             │ Returns 202 Accepted immediately
+                             ▼
+                  ┌────────────────────┐
+                  │ Execution Service  │
+                  │ (status = QUEUED)  │
+                  └─────────┬──────────┘
+                            │ Enqueues ExecutionJob
+                            ▼
+                     ┌─────────────┐
+                     │    Redis    │
+                     │    Queue    │
+                     └──────┬──────┘
+                            │ BLPOP / leftPop
+                            ▼
+                 ┌─────────────────────┐
+                 │   Worker Process    │
+                 │                     │
+                 │ WorkflowExecution   │
+                 │ Engine (Phase 4/6)  │
+                 └──────────┬──────────┘
+                            │ Persists final status (SUCCESS/FAILED)
+                            ▼
+                       ┌─────────┐
+                       │ MongoDB │
+                       └─────────┘
+```
+
+### 9.2 Separation of Concerns: Queueing vs. Execution Core
+
+1. **Unchanged WorkflowExecutionEngine**:
+   The workflow execution engine is treated as an immutable execution core. It encapsulates DAG validation, topological sorting, sequential execution, upstream data resolution, fail-fast semantics, Phase 6 retry policies, failure classification, exponential backoff, attempt tracking, and Phase 5.1 secret redaction. The engine is unaware of Redis or transport mechanics.
+2. **Queue Abstraction (`ExecutionQueue`)**:
+   `WorkflowExecutionService` depends solely on the `ExecutionQueue` interface. In production, `RedisExecutionQueue` pushes jobs via `RPUSH` to `adonis:execution:queue`. In test environments, `InMemoryExecutionQueue` provides non-blocking, isolated execution without requiring a live Redis daemon.
+3. **Payload Minimalism (`ExecutionJob`)**:
+   Queue messages contain only identifiers (`executionId`, `workflowId`, `userId`, `triggerType`, `queuedAt`). The full workflow definition is never put into Redis. The worker loads authoritative state from MongoDB, avoiding document stale-reads and payload bloat.
+4. **Idempotency & Atomic State Transition**:
+   To guard against duplicate message delivery or multi-worker race conditions, workers execute an atomic `findAndModify` query in MongoDB (`WHERE _id == executionId AND status == QUEUED` -> `SET status = RUNNING, startedAt = now()`). Exactly one worker can claim the execution; any duplicate delivery is safely discarded without re-running nodes.
+5. **Fail-Safe Queue Submission**:
+   If MongoDB execution record creation succeeds but Redis enqueueing throws an exception, the system catches the error, transitions the execution record to `FAILED` with a sanitized message, and returns HTTP 500 without leaking Redis internals or leaving the execution stuck in `QUEUED`.
+6. **Graceful Shutdown**:
+   `ExecutionWorker` implements Spring's `SmartLifecycle`. On shutdown, it ceases polling, allows active executions to complete cleanly, and avoids corrupting execution state.
+7. **Frontend Asynchronous Polling**:
+   When the user runs a workflow, the API responds with `202 Accepted`. The UI displays `QUEUED` immediately, triggers an execution history refresh, and polls `/api/executions/{id}` every 1.5 seconds until terminal state (`SUCCESS` or `FAILED`), at which point polling stops cleanly.
 

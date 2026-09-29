@@ -8,9 +8,9 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 6 & 6.1 — Retries & Failure Handling (Hardened)** *(Completed)*
+**Phase 7 — Redis Asynchronous Workers** *(Completed)*
 
-This phase introduces node-level retry policies, intelligent failure classification, exponential backoff, maximum backoff clamping, and granular attempt tracking to the Adonis workflow execution engine. Developers can configure retry behavior per node (`enabled`, `maxRetries`, `initialBackoffMs`, `backoffMultiplier`, `maxBackoffMs`). Failures are classified into retryable (HTTP 408, 429, 500, 502, 503, 504, connection timeouts, network drops) and non-retryable (HTTP 400, 401, 403, 404, validation errors), failing fast on deterministic client errors while recovering from transient infrastructure faults. Non-success HTTP statuses consistently represent failed node executions, avoiding contradictory statuses between HTTP response and node execution state. Every execution attempt is tracked (`NodeExecutionAttempt`) with its duration, status, and error details, sanitized via `SecretRedactor`, persisted in MongoDB (`NodeExecution.attempts`), and visualized in the UI with configurable maximum backoff and retry attempt badges. Execution remains strictly synchronous and in-process, with asynchronous queue workers deferred to Phase 7.
+This phase introduces an asynchronous, distributed-capable workflow execution architecture powered by Redis 7 and Spring Data Redis. The REST API execution endpoint (`POST /api/workflows/{id}/execute`) no longer blocks the HTTP request thread while running workflow graphs. Instead, it validates workflow graph structure upfront, generates an authoritative execution record in MongoDB with status `QUEUED`, enqueues a lightweight `ExecutionJob` message (`executionId`, `workflowId`, `userId`, `triggerType`, `queuedAt`) to the Redis queue (`RPUSH`), and immediately returns `202 Accepted` to the caller. Background worker processes (`ExecutionWorker`) poll jobs from the queue (`BLPOP` / `leftPop`), atomically claim the job from `QUEUED` to `RUNNING` via MongoDB `findAndModify` to enforce idempotency and prevent duplicate executions across concurrent workers, invoke the existing, unchanged `WorkflowExecutionEngine` (preserving all Phase 6 retry policies, failure classification, exponential backoff, attempt tracking, and Phase 5.1 secret redaction), and persist final `SUCCESS` or `FAILED` outcomes with granular node logs to MongoDB. If Redis enqueuing fails, the execution record transitions safely to `FAILED` with sanitized messaging to prevent permanently stuck `QUEUED` records. The frontend receives `202 Accepted`, displays immediate `QUEUED` status in modal and history views, and utilizes controlled polling (every 1.5s) until terminal execution state (`SUCCESS` or `FAILED`).
 
 ---
 
@@ -18,11 +18,12 @@ This phase introduces node-level retry policies, intelligent failure classificat
 
 | Layer | Technology |
 |---|---|
-| **Backend** | Java 21 LTS, Spring Boot 3.3.4, Maven, Spring Web, Spring Data MongoDB, Spring Security 6, JJWT 0.12, BCrypt |
+| **Backend** | Java 21 LTS, Spring Boot 3.3.4, Maven, Spring Web, Spring Data MongoDB, Spring Data Redis, Spring Security 6, JJWT 0.12, BCrypt |
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, @xyflow/react, Lucide Icons |
 | **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017, collections: `users`, `workflows`, `workflow_executions`) |
+| **Queue & Cache** | Redis 7 Alpine (Docker container `adonis-redis` on port 6379, persistent appendonly storage `redis_data`) |
 | **Containerization** | Docker, Docker Compose (Multi-stage builds) |
-| **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc, pure-Java in-memory MongoServer |
+| **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc, pure-Java in-memory MongoServer, in-memory queue fallback |
 | **CI/CD** | GitHub Actions |
 
 ---
@@ -40,11 +41,11 @@ This phase introduces node-level retry policies, intelligent failure classificat
 | `GET` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Retrieve specific workflow (returns 404 if not owned or nonexistent) |
 | `PUT` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Update workflow fields (name, description, status, nodes, edges) |
 | `DELETE` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Delete workflow by ID (returns 204 No Content) |
-| `POST` | `/api/workflows/{id}/execute` | Protected (`Bearer <token>`) | Synchronously validate, execute, and persist workflow execution |
+| `POST` | `/api/workflows/{id}/execute` | Protected (`Bearer <token>`) | Asynchronously enqueue workflow execution (returns `202 Accepted` with `QUEUED` status) |
 | `GET` | `/api/workflows/{id}/executions` | Protected (`Bearer <token>`) | Paginated execution history summary for specific workflow (`?page=0&size=20`) |
-| `GET` | `/api/executions/{executionId}` | Protected (`Bearer <token>`) | Retrieve full node-by-node execution record (404 if not owned) |
+| `GET` | `/api/executions/{executionId}` | Protected (`Bearer <token>`) | Retrieve full node-by-node execution record (`QUEUED`, `RUNNING`, `SUCCESS`, `FAILED`) |
 | `GET` | `/api/executions` | Protected (`Bearer <token>`) | Paginated global execution history for authenticated user (`?page=0&size=20&status=SUCCESS`) |
-| `GET` | `/actuator/health` | Public | Spring Boot Actuator health metric |
+| `GET` | `/actuator/health` | Public | Spring Boot Actuator health diagnostic |
 
 > **Workflow & Execution Ownership Isolation**:
 > All workflows and execution records are strictly scoped to the authenticated user derived from the validated JWT token (`UserPrincipal.id()`). Lookups, updates, and listings enforce ownership at query time (`findByIdAndUserId`), ensuring users can never inspect or modify another user's execution history. Cross-tenant or nonexistent resource requests return `404 Not Found` without leaking record existence. Sensitive tokens (passwords, Authorization headers, API keys) are redacted to `[REDACTED]` prior to persistence.
@@ -148,26 +149,53 @@ npm run dev
 
 ### Running via Docker Compose
 
+Both MongoDB 7 and Redis 7 are orchestrated via Docker Compose:
+
 ```bash
-docker compose up --build
+# Start MongoDB and Redis background services:
+docker compose up -d mongodb redis
+
+# Or build and launch the entire stack (MongoDB, Redis, Backend, Frontend):
+docker compose up --build -d
 ```
 
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:8080`
+- MongoDB: `localhost:27017`
+- Redis: `localhost:6379`
+
+### Environment Variables for Redis & Asynchronous Worker
+
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_HOST` | `localhost` | Redis server hostname (`redis` in Docker Compose) |
+| `REDIS_PORT` | `6379` | Redis server TCP port |
+| `WORKER_ENABLED` | `true` | Toggle execution worker polling loop (set `false` in tests) |
+| `EXECUTION_QUEUE_NAME` | `adonis:execution:queue` | Redis list queue key name for execution jobs |
+| `WORKER_POLL_TIMEOUT_MS` | `2000` | Redis blocking poll timeout (`BLPOP` / `leftPop`) in milliseconds |
+| `QUEUE_TYPE` | `redis` | Queue backend provider (`redis` for production, `in-memory` for tests) |
+
+---
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5 & Phase 6 — Operational)**:
+- **Current (Phase 0 through Phase 7 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users`, `workflows`, and `workflow_executions` collections)
+  - Redis 7.0 persistence queue (`adonis:execution:queue` list with `RPUSH` / `BLPOP`)
   - Spring Security 6 stateless authentication with BCrypt password hashing
   - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`, `/api/executions/**`)
   - Workflow CRUD REST API (`POST`, `GET`, `GET {id}`, `PUT {id}`, `DELETE {id}`) with ownership-level query isolation
   - React Flow visual workflow builder (`@xyflow/react`) with custom nodes (Trigger, HTTP Request, Generic), handles, zoom/pan/minimap, node palette, configuration drawer, and dirty state management
-  - Synchronous in-process workflow execution engine (`POST /api/workflows/{id}/execute`) with graph validation (7 integrity checks), Kahn's topological ordering, fail-fast behavior, data flow propagation, and structured node execution outcomes
+  - Asynchronous, non-blocking workflow execution (`POST /api/workflows/{id}/execute` returns `202 Accepted` immediately with status `QUEUED`)
+  - Fail-safe queue submission: gracefully transitions execution record to `FAILED` with sanitized messaging if Redis enqueuing fails, preventing permanently stuck `QUEUED` records
+  - Queue abstraction: `ExecutionQueue` interface with `RedisExecutionQueue` (production) and `InMemoryExecutionQueue` (test isolation)
+  - Autonomous `ExecutionWorker` process implementing Spring's `SmartLifecycle` for graceful shutdown
+  - Idempotent execution claims via atomic MongoDB `findAndModify` (`QUEUED` → `RUNNING`), guaranteeing exactly-once execution per job across concurrent worker instances
+  - Workflow execution engine: deterministic topological sort, fail-fast behavior, data flow propagation, and structured node execution outcomes
   - Node executors: `TriggerNodeExecutor` (manual execution context), `HttpRequestNodeExecutor` (real HTTP requests via standard Java `HttpClient` for GET/POST/PUT/DELETE/PATCH), and `GenericNodeExecutor` (safe pass-through)
-  - Persistent workflow execution records (`workflow_executions`) tracking status (`RUNNING` → `SUCCESS`/`FAILED`), timestamps, duration, and granular node executions
+  - Persistent workflow execution records (`workflow_executions`) tracking status (`QUEUED` → `RUNNING` → `SUCCESS`/`FAILED`), timestamps, duration, and granular node executions
   - Fail-fast skipped node persistence (downstream nodes marked `SKIPPED`)
   - Node-level retry policies (`RetryConfig`: `enabled`, `maxRetries`, `initialBackoffMs`, `backoffMultiplier`, `maxBackoffMs`) with safe defaults and exponential backoff
   - Intelligent failure classification (`FailureClassifier`) distinguishing retryable errors (408, 429, 500, 502, 503, 504, connection timeouts, refused connections) from non-retryable errors (400, 401, 403, 404, invalid URLs)
@@ -176,11 +204,11 @@ docker compose up --build
   - Pluggable backoff delay strategy (`RetryDelayStrategy`: production thread sleep, non-blocking test stub)
   - Paginated execution history endpoints (`GET /api/workflows/{id}/executions`, `GET /api/executions`) and detailed execution inspector (`GET /api/executions/{id}`)
   - Execution history panel with pagination and enhanced execution results modal inspecting node inputs, outputs, errors, skipped steps, and attempt histories
-  - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, and `mongodb`
+  - Controlled frontend execution polling (every 1.5s) until terminal execution state (`SUCCESS` or `FAILED`)
+  - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, `mongodb`, and `redis`
   - Automated GitHub Actions CI pipeline (backend test & frontend build)
 
-- **Planned Functionality (Phases 7–12)**:
-  - Redis asynchronous workers & queues (Planned for Phase 7)
+- **Planned Functionality (Phases 8–12)**:
   - Scheduling & webhooks (Planned for Phase 8)
   - AI nodes powered by Gemini/OpenAI (Planned for Phase 9)
   - Automated testing & Testcontainers (Planned for Phase 10)
@@ -198,7 +226,7 @@ docker compose up --build
 - [x] **Phase 4 — Workflow Execution Engine**
 - [x] **Phase 5 — Execution History + Logs**
 - [x] **Phase 6 — Retries + Failure Handling**
-- [ ] **Phase 7 — Redis Asynchronous Workers**
+- [x] **Phase 7 — Redis Asynchronous Workers**
 - [ ] **Phase 8 — Scheduling + Webhooks**
 - [ ] **Phase 9 — AI Nodes**
 - [ ] **Phase 10 — Automated Testing + Testcontainers**

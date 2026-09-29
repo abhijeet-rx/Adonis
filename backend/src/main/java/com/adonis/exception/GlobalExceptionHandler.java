@@ -80,6 +80,12 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(ex.getStatusCode().value(), status != null ? status.getReasonPhrase() : "Error", reason));
     }
 
+    @ExceptionHandler(com.adonis.queue.QueueSubmissionException.class)
+    public ResponseEntity<ErrorResponse> handleQueueSubmissionException(com.adonis.queue.QueueSubmissionException ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(ErrorResponse.of(HttpStatus.INTERNAL_SERVER_ERROR.value(), "Internal Server Error", "Failed to enqueue workflow execution"));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)

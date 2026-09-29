@@ -83,15 +83,27 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
   // Dirty state tracking
   const [isDirty, setIsDirty] = useState(false);
 
-  // Execution state (Phase 4 & 5)
+  // Execution state (Phase 4, 5 & 7)
   const [isExecuting, setIsExecuting] = useState(false);
-  const [executionResult, setExecutionResult] = useState<WorkflowExecutionResult | null>(null);
+  const [executionResult, setExecutionResult] = useState<
+    WorkflowExecutionResult | ExecutionResponse | null
+  >(null);
   const [activeExecutionDetail, setActiveExecutionDetail] = useState<
     WorkflowExecutionResult | ExecutionResponse | null
   >(null);
   const [showExecutionModal, setShowExecutionModal] = useState(false);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [historyRefreshTrigger, setHistoryRefreshTrigger] = useState(0);
+
+  const pollTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current !== null) {
+        window.clearInterval(pollTimerRef.current);
+      }
+    };
+  }, []);
 
   // React Flow state
   const [nodes, setNodes, onNodesChangeOriginal] = useNodesState<Node<CustomNodeData>>([]);
@@ -355,11 +367,63 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
         }
       }
 
-      const result = await workflowApi.executeWorkflow(workflow.id, token);
-      setExecutionResult(result);
-      setActiveExecutionDetail(result);
+      // 1. Enqueue execution asynchronously (Phase 7: Redis Queue returns 202 Accepted)
+      const queuedResponse = await workflowApi.executeWorkflow(workflow.id, token);
+
+      // 2. Display immediate QUEUED state in UI modal and refresh history
+      const initialExecution: ExecutionResponse = {
+        id: queuedResponse.executionId,
+        executionId: queuedResponse.executionId,
+        workflowId: queuedResponse.workflowId,
+        status: queuedResponse.status,
+        triggerType: 'manual',
+        startedAt: null,
+        completedAt: null,
+        durationMs: 0,
+        nodeExecutions: [],
+        nodes: []
+      };
+
+      setExecutionResult(initialExecution);
+      setActiveExecutionDetail(initialExecution);
       setShowExecutionModal(true);
       setHistoryRefreshTrigger((prev) => prev + 1);
+
+      // 3. Clear previous poll timer if present
+      if (pollTimerRef.current !== null) {
+        window.clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+
+      // 4. Controlled polling: every 1.5s until terminal state (SUCCESS / FAILED) or max 60 attempts (~90s)
+      const executionId = queuedResponse.executionId;
+      const pollIntervalMs = 1500;
+      const maxPolls = 60;
+      let pollCount = 0;
+
+      pollTimerRef.current = window.setInterval(async () => {
+        pollCount++;
+        try {
+          const detail = await workflowApi.getExecution(executionId, token);
+          setExecutionResult(detail);
+          setActiveExecutionDetail(detail);
+          setHistoryRefreshTrigger((prev) => prev + 1);
+
+          if (detail.status === 'SUCCESS' || detail.status === 'FAILED' || pollCount >= maxPolls) {
+            if (pollTimerRef.current !== null) {
+              window.clearInterval(pollTimerRef.current);
+              pollTimerRef.current = null;
+            }
+          }
+        } catch {
+          if (pollCount >= maxPolls) {
+            if (pollTimerRef.current !== null) {
+              window.clearInterval(pollTimerRef.current);
+              pollTimerRef.current = null;
+            }
+          }
+        }
+      }, pollIntervalMs);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Execution failed';
       setErrorMessage(msg);

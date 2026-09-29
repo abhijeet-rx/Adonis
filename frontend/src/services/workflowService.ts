@@ -48,8 +48,14 @@ export interface UpdateWorkflowRequest {
   edges?: WorkflowEdge[];
 }
 
-export type ExecutionStatus = 'RUNNING' | 'SUCCESS' | 'FAILED';
+export type ExecutionStatus = 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED';
 export type NodeExecutionStatus = 'SUCCESS' | 'FAILED' | 'SKIPPED';
+
+export interface ExecuteWorkflowResponse {
+  executionId: string;
+  workflowId: string;
+  status: ExecutionStatus;
+}
 
 export interface RetryConfig {
   enabled: boolean;
@@ -106,7 +112,7 @@ export interface ExecutionResponse {
   workflowId: string;
   status: ExecutionStatus;
   triggerType?: string;
-  startedAt: string;
+  startedAt?: string | null;
   completedAt?: string | null;
   durationMs?: number | null;
   nodeExecutions: NodeExecutionResult[];
@@ -120,7 +126,7 @@ export interface ExecutionSummaryResponse {
   workflowId: string;
   status: ExecutionStatus;
   triggerType?: string;
-  startedAt: string;
+  startedAt?: string | null;
   completedAt?: string | null;
   durationMs?: number | null;
   error?: string | null;
@@ -214,7 +220,7 @@ export const workflowApi = {
     }
   },
 
-  async executeWorkflow(id: string, token: string): Promise<WorkflowExecutionResult> {
+  async executeWorkflow(id: string, token: string): Promise<ExecuteWorkflowResponse> {
     const res = await fetch(`${API_BASE_URL}/api/workflows/${encodeURIComponent(id)}/execute`, {
       method: 'POST',
       headers: {

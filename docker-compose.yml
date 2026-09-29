@@ -11,9 +11,12 @@ services:
       - SPRING_PROFILES_ACTIVE=prod
       - SERVER_PORT=8080
       - MONGODB_URI=mongodb://mongodb:27017/adonis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - JWT_SECRET=${JWT_SECRET}
     depends_on:
       - mongodb
+      - redis
     restart: unless-stopped
 
   # Adonis React Frontend Service (Vite + Nginx)
@@ -40,20 +43,17 @@ services:
       - mongo-data:/data/db
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # Infrastructure Services (Reserved for subsequent development phases)
-  # ---------------------------------------------------------------------------
-
-  # Redis (Scheduled for Phase 7: Redis Asynchronous Workers)
-  # redis:
-  #   image: redis:7.2-alpine
-  #   container_name: adonis-redis
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - redis-data:/data
-  #   restart: unless-stopped
+  # Redis Asynchronous Queue Service (Phase 7)
+  redis:
+    image: redis:7-alpine
+    container_name: adonis-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
 
 volumes:
   mongo-data:
-# redis-data:
+  redis_data:

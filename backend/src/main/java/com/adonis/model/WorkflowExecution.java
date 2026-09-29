@@ -33,6 +33,8 @@ public class WorkflowExecution {
 
     private String triggerType;
 
+    private Instant queuedAt;
+
     @Indexed
     private Instant startedAt;
 
@@ -50,16 +52,40 @@ public class WorkflowExecution {
     public WorkflowExecution(String id, String workflowId, String userId, ExecutionStatus status,
                              String triggerType, Instant startedAt, Instant completedAt,
                              Long durationMs, List<NodeExecution> nodeExecutions, String error) {
+        this(id, workflowId, userId, status, triggerType, null, startedAt, completedAt, durationMs, nodeExecutions, error);
+    }
+
+    public WorkflowExecution(String id, String workflowId, String userId, ExecutionStatus status,
+                             String triggerType, Instant queuedAt, Instant startedAt, Instant completedAt,
+                             Long durationMs, List<NodeExecution> nodeExecutions, String error) {
         this.id = id;
         this.workflowId = workflowId;
         this.userId = userId;
         this.status = status;
         this.triggerType = triggerType;
+        this.queuedAt = queuedAt;
         this.startedAt = startedAt;
         this.completedAt = completedAt;
         this.durationMs = durationMs;
         this.nodeExecutions = nodeExecutions != null ? new ArrayList<>(nodeExecutions) : new ArrayList<>();
         this.error = SecretRedactor.redactString(error);
+    }
+
+    public static WorkflowExecution queued(String workflowId, String userId, String triggerType) {
+        Instant now = Instant.now();
+        return new WorkflowExecution(
+                null,
+                workflowId,
+                userId,
+                ExecutionStatus.QUEUED,
+                triggerType != null ? triggerType : "manual",
+                now,
+                null,
+                null,
+                null,
+                new ArrayList<>(),
+                null
+        );
     }
 
     public static WorkflowExecution start(String workflowId, String userId, String triggerType) {
@@ -71,11 +97,27 @@ public class WorkflowExecution {
                 ExecutionStatus.RUNNING,
                 triggerType != null ? triggerType : "manual",
                 now,
+                now,
                 null,
                 null,
                 new ArrayList<>(),
                 null
         );
+    }
+
+    public void markRunning(Instant startedAt) {
+        if (this.status != ExecutionStatus.QUEUED) {
+            throw new IllegalStateException("Cannot transition to RUNNING from " + this.status);
+        }
+        this.status = ExecutionStatus.RUNNING;
+        this.startedAt = startedAt != null ? startedAt : Instant.now();
+    }
+
+    public void markQueueFailed(String errorMessage) {
+        this.status = ExecutionStatus.FAILED;
+        this.completedAt = Instant.now();
+        this.durationMs = 0L;
+        this.error = SecretRedactor.redactString(errorMessage != null ? errorMessage : "Failed to queue execution");
     }
 
     public void markSuccess(Instant completedAt, List<NodeExecution> nodes) {
@@ -132,6 +174,14 @@ public class WorkflowExecution {
 
     public void setTriggerType(String triggerType) {
         this.triggerType = triggerType;
+    }
+
+    public Instant getQueuedAt() {
+        return queuedAt;
+    }
+
+    public void setQueuedAt(Instant queuedAt) {
+        this.queuedAt = queuedAt;
     }
 
     public Instant getStartedAt() {

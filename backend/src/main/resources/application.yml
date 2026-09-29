@@ -8,11 +8,20 @@ spring:
     mongodb:
       uri: ${MONGODB_URI:mongodb://localhost:27017/adonis}
       auto-index-creation: true
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
 adonis:
   jwt:
     secret: ${JWT_SECRET}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  worker:
+    enabled: ${WORKER_ENABLED:true}
+    queue-name: ${EXECUTION_QUEUE_NAME:adonis:execution:queue}
+    poll-timeout-ms: ${WORKER_POLL_TIMEOUT_MS:2000}
+  queue:
+    type: ${QUEUE_TYPE:redis}
 
 management:
   endpoints:

@@ -73,12 +73,12 @@ public class WorkflowController {
     }
 
     @PostMapping("/{id}/execute")
-    public ResponseEntity<WorkflowExecutionResult> executeWorkflow(
+    public ResponseEntity<com.adonis.dto.ExecuteWorkflowResponse> executeWorkflow(
             @PathVariable String id,
             Authentication authentication) {
         UserPrincipal principal = getAuthenticatedPrincipal(authentication);
-        WorkflowExecutionResult result = executionService.executeWorkflow(id, principal.id());
-        return ResponseEntity.ok(result.sanitized());
+        com.adonis.dto.ExecuteWorkflowResponse response = executionService.enqueueExecution(id, principal.id());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @GetMapping("/{id}/executions")

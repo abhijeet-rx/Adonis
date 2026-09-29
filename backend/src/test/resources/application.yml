@@ -4,7 +4,16 @@ spring:
       auto-index-creation: false
       uri: mongodb://localhost:27017/adonis-test
 
+management:
+  health:
+    redis:
+      enabled: false
+
 adonis:
   jwt:
     secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
     expiration-ms: 86400000
+  worker:
+    enabled: false
+  queue:
+    type: in-memory

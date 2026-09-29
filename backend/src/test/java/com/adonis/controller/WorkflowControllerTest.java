@@ -403,41 +403,28 @@ class WorkflowControllerTest {
     // -------------------------------------------------------------
 
     @Test
-    void executeWorkflow_ShouldReturn200AndResultWhenAuthorized() throws Exception {
-        Instant now = Instant.now();
-        com.adonis.execution.WorkflowExecutionResult result = com.adonis.execution.WorkflowExecutionResult.success(
+    void executeWorkflow_ShouldReturn202AndQueuedStatusWhenAuthorized() throws Exception {
+        com.adonis.dto.ExecuteWorkflowResponse response = new com.adonis.dto.ExecuteWorkflowResponse(
                 "exec-123",
                 "wf-101",
-                now,
-                now,
-                List.of(
-                        com.adonis.execution.NodeExecutionResult.success(
-                                "node-1",
-                                "trigger",
-                                now,
-                                now,
-                                Map.of("trigger", "manual")
-                        )
-                )
+                com.adonis.execution.ExecutionStatus.QUEUED
         );
 
-        when(executionService.executeWorkflow("wf-101", "user-A-id")).thenReturn(result);
+        when(executionService.enqueueExecution("wf-101", "user-A-id")).thenReturn(response);
 
         mockMvc.perform(post("/api/workflows/wf-101/execute")
                         .header("Authorization", "Bearer " + userAToken))
-                .andExpect(status().isOk())
+                .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.executionId").value("exec-123"))
                 .andExpect(jsonPath("$.workflowId").value("wf-101"))
-                .andExpect(jsonPath("$.status").value("SUCCESS"))
-                .andExpect(jsonPath("$.nodes[0].nodeId").value("node-1"))
-                .andExpect(jsonPath("$.nodes[0].status").value("SUCCESS"));
+                .andExpect(jsonPath("$.status").value("QUEUED"));
 
-        verify(executionService).executeWorkflow("wf-101", "user-A-id");
+        verify(executionService).enqueueExecution("wf-101", "user-A-id");
     }
 
     @Test
     void executeWorkflow_ShouldReturn404WhenWorkflowNotFoundOrNotOwned() throws Exception {
-        when(executionService.executeWorkflow("wf-unowned", "user-B-id"))
+        when(executionService.enqueueExecution("wf-unowned", "user-B-id"))
                 .thenThrow(new WorkflowNotFoundException("Workflow not found with id: wf-unowned"));
 
         mockMvc.perform(post("/api/workflows/wf-unowned/execute")
@@ -445,12 +432,12 @@ class WorkflowControllerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404));
 
-        verify(executionService).executeWorkflow("wf-unowned", "user-B-id");
+        verify(executionService).enqueueExecution("wf-unowned", "user-B-id");
     }
 
     @Test
     void executeWorkflow_ShouldReturn400WhenValidationFails() throws Exception {
-        when(executionService.executeWorkflow("wf-invalid", "user-A-id"))
+        when(executionService.enqueueExecution("wf-invalid", "user-A-id"))
                 .thenThrow(new com.adonis.exception.WorkflowValidationException("Workflow execution graph contains a cycle"));
 
         mockMvc.perform(post("/api/workflows/wf-invalid/execute")
@@ -459,7 +446,24 @@ class WorkflowControllerTest {
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.message").value("Workflow execution graph contains a cycle"));
 
-        verify(executionService).executeWorkflow("wf-invalid", "user-A-id");
+        verify(executionService).enqueueExecution("wf-invalid", "user-A-id");
+    }
+
+    @Test
+    void executeWorkflow_ShouldReturn500WhenQueueSubmissionFailsWithoutLeakingInternals() throws Exception {
+        when(executionService.enqueueExecution("wf-101", "user-A-id"))
+                .thenThrow(new com.adonis.queue.QueueSubmissionException(
+                        "Failed to enqueue workflow execution",
+                        new RuntimeException("Redis connection refused on 127.0.0.1:6379")
+                ));
+
+        mockMvc.perform(post("/api/workflows/wf-101/execute")
+                        .header("Authorization", "Bearer " + userAToken))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.message").value("Failed to enqueue workflow execution"));
+
+        verify(executionService).enqueueExecution("wf-101", "user-A-id");
     }
 
     @Test
@@ -467,6 +471,6 @@ class WorkflowControllerTest {
         mockMvc.perform(post("/api/workflows/wf-101/execute"))
                 .andExpect(status().isUnauthorized());
 
-        verify(executionService, never()).executeWorkflow(any(), any());
+        verify(executionService, never()).enqueueExecution(any(), any());
     }
 }

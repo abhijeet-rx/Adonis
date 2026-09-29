@@ -78,6 +78,7 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
     }
   };
 
+  const isQueued = result.status === 'QUEUED';
   const isSuccess = result.status === 'SUCCESS';
   const isRunning = result.status === 'RUNNING';
 
@@ -111,6 +112,10 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
               <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400">
                 <RefreshCw className="w-5 h-5 animate-spin" />
               </div>
+            ) : isQueued ? (
+              <div className="p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-400">
+                <Clock className="w-5 h-5 animate-pulse" />
+              </div>
             ) : (
               <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400">
                 <XCircle className="w-5 h-5" />
@@ -125,6 +130,8 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                       ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                       : isRunning
                       ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                      : isQueued
+                      ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
                       : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
                   }`}
                 >
@@ -194,7 +201,19 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
           </h4>
 
           {nodesList.length === 0 ? (
-            <p className="text-xs text-slate-500 italic">No node records available.</p>
+            isQueued ? (
+              <div className="flex items-center gap-2 p-4 rounded-lg bg-indigo-950/20 border border-indigo-900/30 text-indigo-300 text-xs">
+                <Clock className="w-4 h-4 animate-spin" />
+                <span>Execution is queued in Redis and waiting for worker pickup...</span>
+              </div>
+            ) : isRunning ? (
+              <div className="flex items-center gap-2 p-4 rounded-lg bg-amber-950/20 border border-amber-900/30 text-amber-300 text-xs">
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Workflow is currently executing nodes...</span>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500 italic">No node records available.</p>
+            )
           ) : (
             nodesList.map((node: NodeExecutionResult, index: number) => {
               const nodeSuccess = node.status === 'SUCCESS';
