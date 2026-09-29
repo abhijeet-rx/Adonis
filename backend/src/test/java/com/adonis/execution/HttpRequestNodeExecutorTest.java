@@ -5,6 +5,8 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -58,6 +60,24 @@ class HttpRequestNodeExecutorTest {
             exchange.sendResponseHeaders(404, responseBytes.length);
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(responseBytes);
+            }
+        });
+
+        // Endpoint: /status/{code}
+        localServer.createContext("/status", exchange -> {
+            String path = exchange.getRequestURI().getPath();
+            int code = 200;
+            try {
+                code = Integer.parseInt(path.substring(path.lastIndexOf('/') + 1));
+            } catch (Exception ignored) {}
+            byte[] responseBytes = ("Response for HTTP " + code).getBytes(StandardCharsets.UTF_8);
+            if (code == 204) {
+                exchange.sendResponseHeaders(204, -1);
+            } else {
+                exchange.sendResponseHeaders(code, responseBytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(responseBytes);
+                }
             }
         });
 
@@ -117,7 +137,7 @@ class HttpRequestNodeExecutorTest {
     }
 
     @Test
-    void execute_Http404Status_TreatedAsCompletedResponseWithFalseSuccess() {
+    void execute_Http404Status_FailsExecutionWithDetails() {
         WorkflowNode node = new WorkflowNode(
                 "node-http-404",
                 "httpRequest",
@@ -129,8 +149,10 @@ class HttpRequestNodeExecutorTest {
 
         NodeExecutionResult result = executor.execute(node, Map.of(), context);
 
-        // HTTP response status 404 completes without transport error
-        assertEquals(ExecutionStatus.SUCCESS, result.status());
+        // HTTP response status 404 is represented as execution failure with full response output preserved
+        assertEquals(ExecutionStatus.FAILED, result.status());
+        assertNotNull(result.error());
+        assertTrue(result.error().contains("HTTP 404"));
         assertEquals(404, result.output().get("statusCode"));
         assertEquals(false, result.output().get("success"));
         assertTrue(result.output().get("body").toString().contains("Not Found Error"));
@@ -210,5 +232,46 @@ class HttpRequestNodeExecutorTest {
         assertEquals(ExecutionStatus.FAILED, result.status());
         assertNotNull(result.error());
         assertTrue(result.error().contains("Unsupported HTTP method: HEAD"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {200, 201, 204})
+    void execute_SuccessStatusCodes_ReturnSuccessNodeStatus(int statusCode) {
+        WorkflowNode node = new WorkflowNode(
+                "node-status-" + statusCode,
+                "httpRequest",
+                Map.of("url", baseUrl + "/status/" + statusCode, "method", "GET")
+        );
+
+        NodeExecutionResult result = executor.execute(node, Map.of(), context);
+
+        assertEquals(ExecutionStatus.SUCCESS, result.status());
+        assertNull(result.error());
+        assertNotNull(result.output());
+        assertEquals(statusCode, result.output().get("statusCode"));
+        assertEquals(true, result.output().get("success"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {400, 401, 403, 404, 408, 429, 500, 502, 503, 504})
+    void execute_ErrorStatusCodes_ReturnFailedNodeStatusWithoutContradiction(int statusCode) {
+        WorkflowNode node = new WorkflowNode(
+                "node-status-" + statusCode,
+                "httpRequest",
+                Map.of("url", baseUrl + "/status/" + statusCode, "method", "GET")
+        );
+
+        NodeExecutionResult result = executor.execute(node, Map.of(), context);
+
+        // Verify status is FAILED and output.success is false - no contradiction!
+        assertEquals(ExecutionStatus.FAILED, result.status(),
+                "HTTP status " + statusCode + " must be represented as a FAILED node execution");
+        assertNotNull(result.error());
+        assertTrue(result.error().contains("HTTP " + statusCode),
+                "Error message should contain HTTP status: " + result.error());
+        assertNotNull(result.output());
+        assertEquals(statusCode, result.output().get("statusCode"));
+        assertEquals(false, result.output().get("success"),
+                "Output success flag must be false for error HTTP status " + statusCode);
     }
 }

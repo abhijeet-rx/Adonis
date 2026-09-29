@@ -56,7 +56,7 @@ export interface RetryConfig {
   maxRetries: number;
   initialBackoffMs: number;
   backoffMultiplier: number;
-  maxBackoffMs?: number;
+  maxBackoffMs: number;
 }
 
 export interface NodeExecutionAttempt {

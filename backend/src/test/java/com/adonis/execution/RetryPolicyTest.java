@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
@@ -220,5 +221,178 @@ class RetryPolicyTest {
         assertEquals(0, result.retryCount());
         assertEquals(1, result.attempts().size());
         assertTrue(delayStrategy.delays.isEmpty());
+    }
+
+    @Test
+    void executeWithRetry_RetryDisabled_ExecutesOnlyOnceEvenIfRetryable() {
+        RecordingDelayStrategy delayStrategy = new RecordingDelayStrategy();
+        RetryPolicy policy = new RetryPolicy(failureClassifier, delayStrategy);
+
+        WorkflowNode node = new WorkflowNode("node-disabled", "custom", Map.of(
+                "retry", Map.of("enabled", false, "maxRetries", 3)
+        ));
+        ExecutionContext context = new ExecutionContext("e-1", "w-1", "u-1", Instant.now());
+
+        AtomicInteger callCount = new AtomicInteger();
+        NodeExecutor failingExecutor = new SimpleNodeExecutor(n -> {
+            callCount.incrementAndGet();
+            return NodeExecutionResult.failure(n.getId(), n.getType(), Instant.now(), Instant.now(),
+                    Map.of(), Map.of("statusCode", 503), "HTTP 503 SERVICE_UNAVAILABLE");
+        });
+
+        NodeExecutionResult result = policy.executeWithRetry(node, Map.of(), context, failingExecutor);
+
+        assertEquals(1, callCount.get(), "Retry disabled must only attempt once");
+        assertEquals(ExecutionStatus.FAILED, result.status());
+        assertEquals(0, result.retryCount());
+        assertEquals(1, result.attempts().size());
+        assertTrue(delayStrategy.delays.isEmpty(), "No backoff delay when retry is disabled");
+    }
+
+    @Test
+    void executeWithRetry_NoRetryConfigInNodeData_ExecutesOnlyOnceEvenIfRetryable() {
+        RecordingDelayStrategy delayStrategy = new RecordingDelayStrategy();
+        RetryPolicy policy = new RetryPolicy(failureClassifier, delayStrategy);
+
+        // Node with zero retry configuration (backward compatibility)
+        WorkflowNode node = new WorkflowNode("node-no-config", "custom", Map.of());
+        ExecutionContext context = new ExecutionContext("e-1", "w-1", "u-1", Instant.now());
+
+        AtomicInteger callCount = new AtomicInteger();
+        NodeExecutor failingExecutor = new SimpleNodeExecutor(n -> {
+            callCount.incrementAndGet();
+            return NodeExecutionResult.failure(n.getId(), n.getType(), Instant.now(), Instant.now(),
+                    Map.of(), Map.of("statusCode", 503), "HTTP 503 SERVICE_UNAVAILABLE");
+        });
+
+        NodeExecutionResult result = policy.executeWithRetry(node, Map.of(), context, failingExecutor);
+
+        assertEquals(1, callCount.get(), "Workflows without retry configuration must default to 1 attempt");
+        assertEquals(ExecutionStatus.FAILED, result.status());
+        assertEquals(0, result.retryCount());
+        assertEquals(1, result.attempts().size());
+        assertTrue(delayStrategy.delays.isEmpty());
+    }
+
+    @Test
+    void executeWithRetry_SuccessfulRetryOnThirdAttempt() {
+        RecordingDelayStrategy delayStrategy = new RecordingDelayStrategy();
+        RetryPolicy policy = new RetryPolicy(failureClassifier, delayStrategy);
+
+        WorkflowNode node = new WorkflowNode("node-3rd-success", "custom", Map.of(
+                "retry", Map.of("enabled", true, "maxRetries", 3, "initialBackoffMs", 1000L, "backoffMultiplier", 2.0)
+        ));
+        ExecutionContext context = new ExecutionContext("e-1", "w-1", "u-1", Instant.now());
+
+        AtomicInteger callCount = new AtomicInteger();
+        NodeExecutor executor = new SimpleNodeExecutor(n -> {
+            int attempt = callCount.incrementAndGet();
+            Instant now = Instant.now();
+            if (attempt == 1) {
+                return NodeExecutionResult.failure(n.getId(), n.getType(), now, now,
+                        Map.of(), Map.of("statusCode", 503), "HTTP 503 Attempt 1");
+            }
+            if (attempt == 2) {
+                return NodeExecutionResult.failure(n.getId(), n.getType(), now, now,
+                        Map.of(), Map.of("statusCode", 503), "HTTP 503 Attempt 2");
+            }
+            return NodeExecutionResult.success(n.getId(), n.getType(), now, now,
+                    Map.of(), Map.of("statusCode", 200, "data", "successOnAttempt3"));
+        });
+
+        NodeExecutionResult result = policy.executeWithRetry(node, Map.of(), context, executor);
+
+        assertEquals(3, callCount.get());
+        assertEquals(ExecutionStatus.SUCCESS, result.status());
+        assertEquals(2, result.retryCount(), "Two retries occurred before success");
+        assertEquals(3, result.attempts().size(), "Three attempts recorded");
+        assertEquals(2, delayStrategy.delays.size(), "Two backoff delays executed");
+        assertEquals(1000L, delayStrategy.delays.get(0));
+        assertEquals(2000L, delayStrategy.delays.get(1));
+        assertEquals("successOnAttempt3", result.output().get("data"));
+    }
+
+    @Test
+    void executeWithRetry_ExhaustedRetriesWithMaxRetries2() {
+        RecordingDelayStrategy delayStrategy = new RecordingDelayStrategy();
+        RetryPolicy policy = new RetryPolicy(failureClassifier, delayStrategy);
+
+        WorkflowNode node = new WorkflowNode("node-exhausted-2", "custom", Map.of(
+                "retry", Map.of("enabled", true, "maxRetries", 2, "initialBackoffMs", 1000L)
+        ));
+        ExecutionContext context = new ExecutionContext("e-1", "w-1", "u-1", Instant.now());
+
+        AtomicInteger callCount = new AtomicInteger();
+        NodeExecutor executor = new SimpleNodeExecutor(n -> {
+            callCount.incrementAndGet();
+            Instant now = Instant.now();
+            return NodeExecutionResult.failure(n.getId(), n.getType(), now, now,
+                    Map.of(), Map.of("statusCode", 503), "HTTP 503 Persistent Fault");
+        });
+
+        NodeExecutionResult result = policy.executeWithRetry(node, Map.of(), context, executor);
+
+        assertEquals(3, callCount.get(), "maxRetries = 2 means 1 initial + 2 retries = 3 attempts");
+        assertEquals(ExecutionStatus.FAILED, result.status());
+        assertEquals(2, result.retryCount());
+        assertEquals(3, result.attempts().size());
+        assertEquals(List.of(1000L, 2000L), delayStrategy.delays);
+        assertTrue(result.error().contains("Node failed after 3 attempts"));
+    }
+
+    @Test
+    void executeWithRetry_ThreadSafetyAndExecutionIsolation() throws Exception {
+        RetryPolicy policy = new RetryPolicy(failureClassifier, RetryDelayStrategy.noOp());
+        int threadCount = 8;
+        ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+
+        List<Future<NodeExecutionResult>> futures = new ArrayList<>();
+
+        for (int i = 0; i < threadCount; i++) {
+            final int index = i;
+            final int retriesForThisNode = (index % 3) + 1; // 1, 2, or 3 retries
+            WorkflowNode node = new WorkflowNode("node-iso-" + index, "custom", Map.of(
+                    "retry", Map.of("enabled", true, "maxRetries", retriesForThisNode, "initialBackoffMs", 500L)
+            ));
+            ExecutionContext context = new ExecutionContext("exec-" + index, "wf-" + index, "user-" + index, Instant.now());
+
+            futures.add(executorService.submit(() -> {
+                startLatch.await();
+                AtomicInteger localCounter = new AtomicInteger();
+                NodeExecutor mockExecutor = new SimpleNodeExecutor(n -> {
+                    int attempt = localCounter.incrementAndGet();
+                    Instant now = Instant.now();
+                    // Always fail until exhausted
+                    return NodeExecutionResult.failure(n.getId(), n.getType(), now, now,
+                            Map.of("threadIndex", index), Map.of("statusCode", 503), "HTTP 503 on thread " + index);
+                });
+
+                try {
+                    return policy.executeWithRetry(node, Map.of("id", index), context, mockExecutor);
+                } finally {
+                    doneLatch.countDown();
+                }
+            }));
+        }
+
+        startLatch.countDown();
+        assertTrue(doneLatch.await(10, TimeUnit.SECONDS), "All concurrent executions should complete in time");
+        executorService.shutdown();
+
+        for (int i = 0; i < threadCount; i++) {
+            int expectedRetries = (i % 3) + 1;
+            int expectedAttempts = 1 + expectedRetries;
+            NodeExecutionResult result = futures.get(i).get();
+
+            assertEquals("node-iso-" + i, result.nodeId());
+            assertEquals(ExecutionStatus.FAILED, result.status());
+            assertEquals(expectedRetries, result.retryCount(), "Retry count for thread " + i + " must not be affected by other threads");
+            assertEquals(expectedAttempts, result.attempts().size(), "Attempts size for thread " + i + " must be strictly isolated");
+            for (NodeExecutionAttempt attempt : result.attempts()) {
+                assertEquals(i, attempt.getInput().get("threadIndex"), "Attempt input must belong to thread " + i);
+            }
+        }
     }
 }

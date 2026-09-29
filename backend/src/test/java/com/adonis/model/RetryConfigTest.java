@@ -130,4 +130,21 @@ class RetryConfigTest {
         assertEquals(2.0, map.get("backoffMultiplier"));
         assertEquals(30000L, map.get("maxBackoffMs"));
     }
+
+    @Test
+    void fromNodeData_NullOrEmptyData_DefaultsSafelyForBackwardCompatibility() {
+        RetryConfig config1 = RetryConfig.fromNodeData(null);
+        assertFalse(config1.enabled());
+        assertEquals(0, config1.maxRetries());
+        assertEquals(1000L, config1.initialBackoffMs());
+        assertEquals(2.0, config1.backoffMultiplier());
+        assertEquals(30000L, config1.maxBackoffMs());
+
+        RetryConfig config2 = RetryConfig.fromNodeData(Map.of("label", "my-node", "url", "https://api.com"));
+        assertFalse(config2.enabled());
+        assertEquals(0, config2.maxRetries());
+        assertEquals(1000L, config2.initialBackoffMs());
+        assertEquals(2.0, config2.backoffMultiplier());
+        assertEquals(30000L, config2.maxBackoffMs());
+    }
 }

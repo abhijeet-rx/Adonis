@@ -240,16 +240,17 @@ Is Failure Retryable? (FailureClassifier)
 ### Core Architecture Components
 
 1. **Retry Configuration (`RetryConfig`)**:
-   - Embedded within `WorkflowNode.data.retryConfig`.
-   - Fields: `enabled` (boolean), `maxRetries` (int, default 3, max 10), `initialBackoffMs` (long, default 1000ms), `backoffMultiplier` (double, default 2.0), `maxBackoffMs` (long, default 30000ms).
+   - Embedded within `WorkflowNode.data.retryConfig` or `WorkflowNode.data.retry`.
+   - Fields: `enabled` (boolean, default false), `maxRetries` (int, default 0, max 10), `initialBackoffMs` (long, default 1000ms), `backoffMultiplier` (double, default 2.0), `maxBackoffMs` (long, default 30000ms, max 60000ms).
    - Strict Semantics: `maxRetries` defines the number of retries *after* the initial failed attempt (total attempts = `1 + maxRetries`).
    - Backward Compatibility: Workflows without a `retryConfig` object default to `enabled: false, maxRetries: 0`.
 
-2. **Failure Classifier (`FailureClassifier`)**:
-   - Evaluates whether an error is temporary or permanent.
-   - **Retryable**: HTTP status codes 408 (Request Timeout), 429 (Too Many Requests), 500 (Internal Server Error), 502 (Bad Gateway), 503 (Service Unavailable), 504 (Gateway Timeout); network exceptions (e.g. `ConnectException`, `SocketTimeoutException`, `HttpConnectTimeoutException`, connection refused).
-   - **Non-Retryable**: HTTP status codes 400 (Bad Request), 401 (Unauthorized), 403 (Forbidden), 404 (Not Found); deterministic client errors (e.g. `IllegalArgumentException`, invalid URL schema, malformed configuration).
-   - Conservative Default: Unknown errors or unclassified exceptions default to non-retryable to prevent pointless loops.
+2. **Decoupled HTTP Failure Semantics & Failure Classifier (`FailureClassifier`)**:
+   - `HttpRequestNodeExecutor` consistently reports any HTTP status >= 400 as a failed node execution (`NodeExecutionResult.failure`) regardless of retry configuration, preventing contradictory statuses (`HTTP status = 503, success = false, Node status = SUCCESS`).
+   - `FailureClassifier` alone evaluates whether the failure is temporary or permanent:
+     - **Retryable**: HTTP status codes 408 (Request Timeout), 429 (Too Many Requests), 500 (Internal Server Error), 502 (Bad Gateway), 503 (Service Unavailable), 504 (Gateway Timeout); network exceptions (e.g. `ConnectException`, `SocketTimeoutException`, `HttpConnectTimeoutException`, connection refused).
+     - **Non-Retryable**: HTTP status codes 400 (Bad Request), 401 (Unauthorized), 403 (Forbidden), 404 (Not Found); deterministic client errors (e.g. `IllegalArgumentException`, invalid URL schema, malformed configuration).
+     - Conservative Default: Unknown errors or unclassified exceptions default to non-retryable to prevent pointless loops.
 
 3. **Exponential Backoff & Delay Strategy (`RetryPolicy` & `RetryDelayStrategy`)**:
    - Formula: `delay = min(initialBackoffMs * (backoffMultiplier ^ (attempt - 1)), maxBackoffMs)`.

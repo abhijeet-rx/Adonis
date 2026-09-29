@@ -162,11 +162,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
             output.put("headers", headerMap);
             output.put("body", response.body() != null ? response.body() : "");
 
-            boolean retryConfigEnabled = com.adonis.model.RetryConfig.fromNodeData(nodeData).enabled();
-            boolean failOnErrorStatus = Boolean.parseBoolean(String.valueOf(nodeData.getOrDefault("failOnErrorStatus", "false")))
-                    || Boolean.parseBoolean(String.valueOf(nodeData.getOrDefault("failOnHttpStatus", "false")));
-
-            if (!isSuccessStatus && (retryConfigEnabled || failOnErrorStatus)) {
+            if (!isSuccessStatus) {
                 String errorDetails = response.body() != null && !response.body().isBlank()
                         ? response.body().trim()
                         : statusText;

@@ -103,4 +103,31 @@ class FailureClassifierTest {
                 Map.of(), "HTTP connection failed: Connection refused");
         assertTrue(classifier.isRetryable(connRefusedResult));
     }
+
+    @ParameterizedTest
+    @ValueSource(ints = {408, 429, 500, 502, 503, 504})
+    void isRetryable_RetryableStatusesProduceRetryableResult(int statusCode) {
+        Instant now = Instant.now();
+        NodeExecutionResult result = NodeExecutionResult.failure("n-retry", "httpRequest", now, now,
+                Map.of(), Map.of("statusCode", statusCode), "HTTP " + statusCode);
+        assertTrue(classifier.isRetryable(result), "Status " + statusCode + " must be retryable");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {400, 401, 403, 404})
+    void isRetryable_NonRetryableStatusesProduceNonRetryableResult(int statusCode) {
+        Instant now = Instant.now();
+        NodeExecutionResult result = NodeExecutionResult.failure("n-no-retry", "httpRequest", now, now,
+                Map.of(), Map.of("statusCode", statusCode), "HTTP " + statusCode);
+        assertFalse(classifier.isRetryable(result), "Status " + statusCode + " must NOT be retryable");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {200, 201, 204})
+    void isRetryable_SuccessfulStatusesAreNeverRetryable(int statusCode) {
+        Instant now = Instant.now();
+        NodeExecutionResult result = NodeExecutionResult.success("n-success", "httpRequest", now, now,
+                Map.of(), Map.of("statusCode", statusCode));
+        assertFalse(classifier.isRetryable(result), "Successful status " + statusCode + " must NOT be retryable");
+    }
 }

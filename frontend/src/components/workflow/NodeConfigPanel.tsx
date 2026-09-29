@@ -33,12 +33,12 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
     typeof nodeData.triggerType === 'string' ? nodeData.triggerType : 'Manual'
   );
 
-  const rawRetry = (nodeData.retry as Record<string, unknown>) || {};
+  const rawRetry = (nodeData.retry || nodeData.retryConfig || {}) as Partial<Record<string, unknown>>;
   const [retryEnabled, setRetryEnabled] = useState<boolean>(
     Boolean(rawRetry.enabled ?? nodeData.retryEnabled ?? false)
   );
   const [maxRetries, setMaxRetries] = useState<number>(
-    Number(rawRetry.maxRetries ?? nodeData.maxRetries ?? 3)
+    Number(rawRetry.maxRetries ?? nodeData.maxRetries ?? 0)
   );
   const [initialBackoffMs, setInitialBackoffMs] = useState<number>(
     Number(rawRetry.initialBackoffMs ?? nodeData.retryBackoff ?? 1000)
@@ -46,11 +46,21 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
   const [backoffMultiplier, setBackoffMultiplier] = useState<number>(
     Number(rawRetry.backoffMultiplier ?? nodeData.retryBackoffMultiplier ?? 2.0)
   );
+  const [maxBackoffMs, setMaxBackoffMs] = useState<number>(
+    Number(rawRetry.maxBackoffMs ?? nodeData.maxBackoffMs ?? 30000)
+  );
 
   const [isSavedRecently, setIsSavedRecently] = useState(false);
 
   const handleApply = (e: React.FormEvent) => {
     e.preventDefault();
+    const cleanRetry = {
+      enabled: retryEnabled,
+      maxRetries: Math.max(0, Math.min(10, Number(maxRetries) || 0)),
+      initialBackoffMs: Math.max(0, Math.min(60000, Number(initialBackoffMs) || 1000)),
+      backoffMultiplier: Math.max(0.1, Number(backoffMultiplier) || 2.0),
+      maxBackoffMs: Math.max(0, Math.min(60000, Number(maxBackoffMs) || 30000))
+    };
     const updatedData: CustomNodeData = {
       ...selectedNode.data,
       label: label.trim() || 'Untitled Node',
@@ -58,13 +68,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
       method,
       url: url.trim(),
       triggerType,
-      retry: {
-        enabled: retryEnabled,
-        maxRetries: Math.max(0, Math.min(10, Number(maxRetries) || 0)),
-        initialBackoffMs: Math.max(0, Math.min(60000, Number(initialBackoffMs) || 1000)),
-        backoffMultiplier: Math.max(0.1, Number(backoffMultiplier) || 2.0),
-        maxBackoffMs: 30000
-      }
+      retry: cleanRetry,
+      retryConfig: cleanRetry
     };
     onUpdateNodeData(selectedNode.id, updatedData);
     setIsSavedRecently(true);
@@ -245,6 +250,22 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
                     max={10}
                     value={backoffMultiplier}
                     onChange={(e) => setBackoffMultiplier(Math.max(1, parseFloat(e.target.value) || 2.0))}
+                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                    <span>Maximum Backoff</span>
+                    <span className="font-mono text-slate-300">{maxBackoffMs} ms</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1000}
+                    max={60000}
+                    value={maxBackoffMs}
+                    onChange={(e) => setMaxBackoffMs(Math.max(0, Math.min(60000, parseInt(e.target.value) || 0)))}
                     className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
                   />
                 </div>

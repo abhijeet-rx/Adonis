@@ -1,5 +1,5 @@
 import type { Node, Edge } from '@xyflow/react';
-import type { Workflow, WorkflowNode, WorkflowEdge } from '../../services/workflowService';
+import type { Workflow, WorkflowNode, WorkflowEdge, RetryConfig } from '../../services/workflowService';
 
 export interface CustomNodeData extends Record<string, unknown> {
   label: string;
@@ -7,6 +7,8 @@ export interface CustomNodeData extends Record<string, unknown> {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   url?: string;
   triggerType?: string;
+  retry?: RetryConfig;
+  retryConfig?: RetryConfig;
   [key: string]: unknown;
 }
 

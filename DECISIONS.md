@@ -251,3 +251,21 @@ This document records the architectural and technical decisions made during the 
   - Positive: Workflows automatically recover from transient network and server issues; deterministic errors fail fast without wasteful delay; full observability into retry attempts and durations in the UI; clean backward compatibility with Phase 0–5 workflows.
   - Trade-off: Synchronous backoff delays hold the HTTP request thread during execution. Long-running retries are constrained until asynchronous job queues are implemented in Phase 7.
 
+---
+
+## Phase 6.1: Retry Hardening & Final Fixes
+
+### ADR-019: HTTP Failure Semantics Decoupling, Maximum Backoff UI Exposure, and Default Synchronization
+* **Date**: 2026-09-29
+* **Status**: Accepted
+* **Context**: In Phase 6, `HttpRequestNodeExecutor` conditioned HTTP failure reporting on whether retry was enabled, leading to an inconsistent state where HTTP status 500/503/404 would be reported as `NodeExecutionStatus.SUCCESS` if retries were disabled or not configured. Additionally, the frontend hardcoded `maxBackoffMs` to 30000ms rather than exposing it for user configuration, and frontend `maxRetries` defaulted to 3 while backend defaulted to 0 (`enabled: false`).
+* **Decision**:
+  - **Decoupled HTTP Failure Reporting**: `HttpRequestNodeExecutor` consistently reports any non-success HTTP status (`statusCode < 200 || statusCode >= 400`) as `NodeExecutionResult.failure(...)` with full status code, status text, and response body preserved in `output`. The executor no longer inspects retry configuration to determine failure status.
+  - **Single Source of Truth for Retryability**: `FailureClassifier` alone determines whether the failed execution is retryable (408, 429, 5xx, transport errors) or non-retryable (400, 401, 403, 404, invalid configuration).
+  - **Independent Retry Policy**: `RetryPolicy` alone determines whether additional attempts occur based on `retryConfig.enabled()`, `maxRetries`, and `failureClassifier.isRetryable(attemptResult)`.
+  - **Frontend Maximum Backoff Exposure**: Added `Maximum Backoff` numeric input to `NodeConfigPanel.tsx` (clamped 0..60000ms, step 1000, default 30000ms) with bidirectional persistence into node data.
+  - **Frontend and Backend Default Synchronization**: Synchronized frontend defaults to match backend defaults (`enabled: false`, `maxRetries: 0`, `initialBackoffMs: 1000`, `backoffMultiplier: 2.0`, `maxBackoffMs: 30000`). Existing workflows lacking retry configuration default safely without migrations.
+* **Consequences**:
+  - Positive: Node execution status and HTTP response status are never contradictory. Clean separation of concerns between HTTP execution, failure classification, and retry loop. Full user control over maximum backoff delay in visual editor. Zero regression on backward compatibility and security redaction.
+  - Trade-off: Workflows with non-success HTTP endpoints that previously completed with node status `SUCCESS` will now correctly trigger fail-fast unless retry succeeds or custom error handling is configured.
+

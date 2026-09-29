@@ -8,9 +8,9 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 6 — Retries & Failure Handling** *(Completed)*
+**Phase 6 & 6.1 — Retries & Failure Handling (Hardened)** *(Completed)*
 
-This phase introduces node-level retry policies, intelligent failure classification, exponential backoff, and granular attempt tracking to the Adonis workflow execution engine. Developers can configure retry behavior per node (`enabled`, `maxRetries`, `initialBackoffMs`, `backoffMultiplier`, `maxBackoffMs`). Failures are classified into retryable (HTTP 408, 429, 500, 502, 503, 504, connection timeouts, network drops) and non-retryable (HTTP 400, 401, 403, 404, validation errors), failing fast on deterministic client errors while recovering from transient infrastructure faults. Every execution attempt is tracked (`NodeExecutionAttempt`) with its duration, status, and error details, sanitized via `SecretRedactor`, persisted in MongoDB (`NodeExecution.attempts`), and visualized in the UI with retry attempt badges and expandable execution traces. Execution remains strictly synchronous and in-process, with asynchronous queue workers deferred to Phase 7.
+This phase introduces node-level retry policies, intelligent failure classification, exponential backoff, maximum backoff clamping, and granular attempt tracking to the Adonis workflow execution engine. Developers can configure retry behavior per node (`enabled`, `maxRetries`, `initialBackoffMs`, `backoffMultiplier`, `maxBackoffMs`). Failures are classified into retryable (HTTP 408, 429, 500, 502, 503, 504, connection timeouts, network drops) and non-retryable (HTTP 400, 401, 403, 404, validation errors), failing fast on deterministic client errors while recovering from transient infrastructure faults. Non-success HTTP statuses consistently represent failed node executions, avoiding contradictory statuses between HTTP response and node execution state. Every execution attempt is tracked (`NodeExecutionAttempt`) with its duration, status, and error details, sanitized via `SecretRedactor`, persisted in MongoDB (`NodeExecution.attempts`), and visualized in the UI with configurable maximum backoff and retry attempt badges. Execution remains strictly synchronous and in-process, with asynchronous queue workers deferred to Phase 7.
 
 ---
 
