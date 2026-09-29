@@ -48,28 +48,71 @@ export interface UpdateWorkflowRequest {
   edges?: WorkflowEdge[];
 }
 
-export type ExecutionStatus = 'SUCCESS' | 'FAILED';
+export type ExecutionStatus = 'RUNNING' | 'SUCCESS' | 'FAILED';
+export type NodeExecutionStatus = 'SUCCESS' | 'FAILED' | 'SKIPPED';
 
 export interface NodeExecutionResult {
   nodeId: string;
   nodeType: string;
-  status: ExecutionStatus;
-  startedAt: string;
-  completedAt: string;
+  status: ExecutionStatus | NodeExecutionStatus | string;
+  startedAt?: string | null;
+  completedAt?: string | null;
   durationMs: number;
+  input?: Record<string, unknown> | null;
   output?: Record<string, unknown> | null;
   error?: string | null;
 }
 
+export type NodeExecution = NodeExecutionResult;
+
 export interface WorkflowExecutionResult {
+  id?: string;
   executionId: string;
   workflowId: string;
   status: ExecutionStatus;
+  triggerType?: string;
   startedAt: string;
-  completedAt: string;
+  completedAt?: string | null;
   durationMs: number;
   nodes: NodeExecutionResult[];
+  nodeExecutions?: NodeExecutionResult[];
   error?: string | null;
+}
+
+export interface ExecutionResponse {
+  id: string;
+  executionId?: string;
+  workflowId: string;
+  status: ExecutionStatus;
+  triggerType?: string;
+  startedAt: string;
+  completedAt?: string | null;
+  durationMs?: number | null;
+  nodeExecutions: NodeExecutionResult[];
+  nodes?: NodeExecutionResult[];
+  error?: string | null;
+}
+
+export interface ExecutionSummaryResponse {
+  id: string;
+  executionId?: string;
+  workflowId: string;
+  status: ExecutionStatus;
+  triggerType?: string;
+  startedAt: string;
+  completedAt?: string | null;
+  durationMs?: number | null;
+  error?: string | null;
+}
+
+export interface PageResponse<T> {
+  content: T[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+  first: boolean;
+  last: boolean;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
@@ -161,6 +204,65 @@ export const workflowApi = {
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(errorData.message || `Failed to execute workflow (HTTP ${res.status})`);
+    }
+    return res.json();
+  },
+
+  async getExecution(executionId: string, token: string): Promise<ExecutionResponse> {
+    const res = await fetch(`${API_BASE_URL}/api/executions/${encodeURIComponent(executionId)}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json'
+      }
+    });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || `Failed to fetch execution (HTTP ${res.status})`);
+    }
+    return res.json();
+  },
+
+  async getWorkflowExecutions(
+    workflowId: string,
+    token: string,
+    page = 0,
+    size = 20
+  ): Promise<PageResponse<ExecutionSummaryResponse>> {
+    const res = await fetch(
+      `${API_BASE_URL}/api/workflows/${encodeURIComponent(workflowId)}/executions?page=${page}&size=${size}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || `Failed to fetch workflow executions (HTTP ${res.status})`);
+    }
+    return res.json();
+  },
+
+  async listExecutions(
+    token: string,
+    page = 0,
+    size = 20,
+    status?: string
+  ): Promise<PageResponse<ExecutionSummaryResponse>> {
+    const query = new URLSearchParams({ page: String(page), size: String(size) });
+    if (status) {
+      query.set('status', status);
+    }
+    const res = await fetch(`${API_BASE_URL}/api/executions?${query.toString()}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json'
+      }
+    });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || `Failed to fetch executions (HTTP ${res.status})`);
     }
     return res.json();
   }

@@ -52,6 +52,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                     node.getType(),
                     startedAt,
                     Instant.now(),
+                    input != null ? input : Map.of(),
                     "Missing required 'url' configuration for HTTP request node"
             );
         }
@@ -66,6 +67,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                         node.getType(),
                         startedAt,
                         Instant.now(),
+                        input != null ? input : Map.of(),
                         "URL must use http or https scheme: " + url
                 );
             }
@@ -75,6 +77,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                     node.getType(),
                     startedAt,
                     Instant.now(),
+                    input != null ? input : Map.of(),
                     "Malformed URL: " + e.getMessage()
             );
         }
@@ -99,6 +102,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                         node.getType(),
                         startedAt,
                         Instant.now(),
+                        input != null ? input : Map.of(),
                         "Unsupported HTTP method: " + method
                 );
             }
@@ -123,6 +127,19 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
             }
         }
 
+        Map<String, Object> recordedInput = new LinkedHashMap<>();
+        recordedInput.put("url", url);
+        recordedInput.put("method", method);
+        if (headersObj instanceof Map<?, ?>) {
+            recordedInput.put("headers", headersObj);
+        }
+        if (bodyContent != null) {
+            recordedInput.put("body", bodyContent);
+        }
+        if (input != null && !input.isEmpty()) {
+            recordedInput.put("upstream", input);
+        }
+
         try {
             HttpResponse<String> response = httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
             Instant completedAt = Instant.now();
@@ -140,13 +157,14 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
             output.put("headers", headerMap);
             output.put("body", response.body() != null ? response.body() : "");
 
-            return NodeExecutionResult.success(node.getId(), node.getType(), startedAt, completedAt, output);
+            return NodeExecutionResult.success(node.getId(), node.getType(), startedAt, completedAt, recordedInput, output);
         } catch (HttpTimeoutException e) {
             return NodeExecutionResult.failure(
                     node.getId(),
                     node.getType(),
                     startedAt,
                     Instant.now(),
+                    recordedInput,
                     "HTTP request timed out after " + DEFAULT_TIMEOUT.toSeconds() + "s: " + e.getMessage()
             );
         } catch (IOException e) {
@@ -155,6 +173,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                     node.getType(),
                     startedAt,
                     Instant.now(),
+                    recordedInput,
                     "HTTP connection failed: " + e.getMessage()
             );
         } catch (InterruptedException e) {
@@ -164,6 +183,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                     node.getType(),
                     startedAt,
                     Instant.now(),
+                    recordedInput,
                     "HTTP request interrupted: " + e.getMessage()
             );
         } catch (Exception e) {
@@ -172,6 +192,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                     node.getType(),
                     startedAt,
                     Instant.now(),
+                    recordedInput,
                     "HTTP request unexpected error: " + e.getMessage()
             );
         }

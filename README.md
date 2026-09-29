@@ -8,9 +8,9 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 4 — Workflow Execution Engine** *(Completed)*
+**Phase 5 — Execution History & Logs** *(Completed)*
 
-This phase introduces the core workflow execution engine for Adonis. The engine takes a saved workflow, validates its structure (7 integrity rules including trigger count and cycle detection), determines deterministic topological execution order using Kahn's algorithm, executes supported nodes sequentially (`trigger`, `httpRequest` via standard Java `HttpClient`, and pass-through `generic`), passes data outputs from upstream to downstream nodes, implements fail-fast synchronous error handling, and returns structured execution results to the client. The visual workflow builder provides a seamless **Run Workflow** action and interactive execution results inspector.
+This phase introduces persistent execution history and node-by-node logs for Adonis. Every workflow execution is permanently stored in a dedicated `workflow_executions` MongoDB collection. The execution record captures the initial `RUNNING` status, final `SUCCESS` or `FAILED` outcome, start and completion timestamps, execution duration, and granular node-by-node execution records (including `SKIPPED` status for downstream nodes halted by fail-fast policies). Sensitive secrets (such as `Authorization` headers, API keys, and passwords) are automatically redacted before persistence. Execution history and detail queries enforce strict authenticated user ownership (`findByIdAndUserId`), hiding cross-tenant records behind `404 Not Found`. The visual workflow editor features an execution history panel with pagination and an upgraded execution inspector showing formatted inputs, outputs, errors, and skipped steps.
 
 ---
 
@@ -20,7 +20,7 @@ This phase introduces the core workflow execution engine for Adonis. The engine 
 |---|---|
 | **Backend** | Java 21 LTS, Spring Boot 3.3.4, Maven, Spring Web, Spring Data MongoDB, Spring Security 6, JJWT 0.12, BCrypt |
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, @xyflow/react, Lucide Icons |
-| **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017) |
+| **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017, collections: `users`, `workflows`, `workflow_executions`) |
 | **Containerization** | Docker, Docker Compose (Multi-stage builds) |
 | **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc, pure-Java in-memory MongoServer |
 | **CI/CD** | GitHub Actions |
@@ -40,11 +40,14 @@ This phase introduces the core workflow execution engine for Adonis. The engine 
 | `GET` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Retrieve specific workflow (returns 404 if not owned or nonexistent) |
 | `PUT` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Update workflow fields (name, description, status, nodes, edges) |
 | `DELETE` | `/api/workflows/{id}` | Protected (`Bearer <token>`) | Delete workflow by ID (returns 204 No Content) |
-| `POST` | `/api/workflows/{id}/execute` | Protected (`Bearer <token>`) | Synchronously validate and execute workflow in topological order |
+| `POST` | `/api/workflows/{id}/execute` | Protected (`Bearer <token>`) | Synchronously validate, execute, and persist workflow execution |
+| `GET` | `/api/workflows/{id}/executions` | Protected (`Bearer <token>`) | Paginated execution history summary for specific workflow (`?page=0&size=20`) |
+| `GET` | `/api/executions/{executionId}` | Protected (`Bearer <token>`) | Retrieve full node-by-node execution record (404 if not owned) |
+| `GET` | `/api/executions` | Protected (`Bearer <token>`) | Paginated global execution history for authenticated user (`?page=0&size=20&status=SUCCESS`) |
 | `GET` | `/actuator/health` | Public | Spring Boot Actuator health metric |
 
-> **Workflow Ownership & Privacy**:
-> Workflows are strictly scoped to the authenticated user derived from the validated JWT token (`UserPrincipal.id()`). Lookups, updates, and deletions enforce ownership in database-level queries (`findByIdAndUserId`), ensuring users can never see, modify, or delete another user's workflows. Non-owned workflows return `404 Not Found` without leaking document existence.
+> **Workflow & Execution Ownership Isolation**:
+> All workflows and execution records are strictly scoped to the authenticated user derived from the validated JWT token (`UserPrincipal.id()`). Lookups, updates, and listings enforce ownership at query time (`findByIdAndUserId`), ensuring users can never inspect or modify another user's execution history. Cross-tenant or nonexistent resource requests return `404 Not Found` without leaking record existence. Sensitive tokens (passwords, Authorization headers, API keys) are redacted to `[REDACTED]` prior to persistence.
 
 ---
 
@@ -154,23 +157,25 @@ docker compose up --build
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0, Phase 1, Phase 2, Phase 3 & Phase 4 — Operational)**:
+- **Current (Phase 0, Phase 1, Phase 2, Phase 3, Phase 4 & Phase 5 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
-  - MongoDB 7.0 persistence (`users` and `workflows` collections)
+  - MongoDB 7.0 persistence (`users`, `workflows`, and `workflow_executions` collections)
   - Spring Security 6 stateless authentication with BCrypt password hashing
-  - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`)
+  - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`, `/api/executions/**`)
   - Workflow CRUD REST API (`POST`, `GET`, `GET {id}`, `PUT {id}`, `DELETE {id}`) with ownership-level query isolation
   - React Flow visual workflow builder (`@xyflow/react`) with custom nodes (Trigger, HTTP Request, Generic), handles, zoom/pan/minimap, node palette, configuration drawer, and dirty state management
   - Synchronous in-process workflow execution engine (`POST /api/workflows/{id}/execute`) with graph validation (7 integrity checks), Kahn's topological ordering, fail-fast behavior, data flow propagation, and structured node execution outcomes
   - Node executors: `TriggerNodeExecutor` (manual execution context), `HttpRequestNodeExecutor` (real HTTP requests via standard Java `HttpClient` for GET/POST/PUT/DELETE/PATCH), and `GenericNodeExecutor` (safe pass-through)
-  - Interactive Run Workflow action with real-time progress spinner, execution drawer/modal with duration, status badges, and expandable node outputs
-  - React 19 + TypeScript + Vite + Tailwind CSS frontend with authentication, workflow CRUD management, visual canvas, and execution inspector
+  - Persistent workflow execution records (`workflow_executions`) tracking status (`RUNNING` → `SUCCESS`/`FAILED`), timestamps, duration, and granular node executions
+  - Fail-fast skipped node persistence (downstream nodes marked `SKIPPED`)
+  - Automatic secret redaction for sensitive headers, API keys, bearer tokens, and credentials
+  - Paginated execution history endpoints (`GET /api/workflows/{id}/executions`, `GET /api/executions`) and detailed execution inspector (`GET /api/executions/{id}`)
+  - Execution history panel with pagination and enhanced execution results modal inspecting node inputs, outputs, errors, and skipped steps
   - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, and `mongodb`
   - Automated GitHub Actions CI pipeline (backend test & frontend build)
 
-- **Planned Functionality (Phases 5–12)**:
-  - Execution history & logs in MongoDB (Planned for Phase 5)
+- **Planned Functionality (Phases 6–12)**:
   - Retries & failure handling policies (Planned for Phase 6)
   - Redis asynchronous workers & queues (Planned for Phase 7)
   - Scheduling & webhooks (Planned for Phase 8)
@@ -188,7 +193,7 @@ docker compose up --build
 - [x] **Phase 2 — Workflow CRUD**
 - [x] **Phase 3 — React Flow Visual Workflow Builder**
 - [x] **Phase 4 — Workflow Execution Engine**
-- [ ] **Phase 5 — Execution History + Logs**
+- [x] **Phase 5 — Execution History + Logs**
 - [ ] **Phase 6 — Retries + Failure Handling**
 - [ ] **Phase 7 — Redis Asynchronous Workers**
 - [ ] **Phase 8 — Scheduling + Webhooks**

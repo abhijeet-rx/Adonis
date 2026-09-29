@@ -10,18 +10,26 @@ import {
   Zap,
   Box,
   Copy,
-  Check
+  Check,
+  MinusCircle,
+  RefreshCw
 } from 'lucide-react';
-import type { WorkflowExecutionResult, NodeExecutionResult } from '../../services/workflowService';
+import type {
+  WorkflowExecutionResult,
+  ExecutionResponse,
+  NodeExecutionResult
+} from '../../services/workflowService';
 
 interface ExecutionResultModalProps {
-  result: WorkflowExecutionResult;
+  result: WorkflowExecutionResult | ExecutionResponse;
   onClose: () => void;
 }
 
 export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ result, onClose }) => {
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
+  const [activeTab, setActiveTab] = useState<Record<string, 'output' | 'input'>>({});
   const [copiedId, setCopiedId] = useState(false);
+  const [copiedPayload, setCopiedPayload] = useState<string | null>(null);
 
   const toggleExpand = (nodeId: string) => {
     setExpandedNodes((prev) => ({
@@ -30,12 +38,31 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
     }));
   };
 
+  const setNodeTab = (nodeId: string, tab: 'output' | 'input') => {
+    setActiveTab((prev) => ({
+      ...prev,
+      [nodeId]: tab
+    }));
+  };
+
+  const executionId =
+    ('executionId' in result && result.executionId ? result.executionId : result.id) || '';
+
+  const nodesList: NodeExecutionResult[] =
+    ('nodeExecutions' in result && result.nodeExecutions ? result.nodeExecutions : result.nodes) || [];
+
   const handleCopyId = () => {
-    if (result.executionId) {
-      void navigator.clipboard.writeText(result.executionId);
+    if (executionId) {
+      void navigator.clipboard.writeText(executionId);
       setCopiedId(true);
       setTimeout(() => setCopiedId(false), 2000);
     }
+  };
+
+  const handleCopyJson = (key: string, data: unknown) => {
+    void navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    setCopiedPayload(key);
+    setTimeout(() => setCopiedPayload(null), 2000);
   };
 
   const getNodeIcon = (nodeType: string) => {
@@ -51,17 +78,37 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
   };
 
   const isSuccess = result.status === 'SUCCESS';
+  const isRunning = result.status === 'RUNNING';
+
+  const formatDuration = (ms: number | null | undefined): string => {
+    if (ms == null) return '-';
+    if (ms < 1000) return `${ms} ms`;
+    return `${(ms / 1000).toFixed(2)} s`;
+  };
+
+  const formatTimestamp = (iso: string | null | undefined): string => {
+    if (!iso) return '-';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+      return iso;
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
-      <div className="relative w-full max-w-2xl max-h-[85vh] bg-[#0d1322] border border-slate-800 rounded-xl shadow-2xl flex flex-col overflow-hidden text-slate-100">
-        
+      <div className="relative w-full max-w-2xl max-h-[88vh] bg-[#0d1322] border border-slate-800 rounded-xl shadow-2xl flex flex-col overflow-hidden text-slate-100">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-[#11182d]">
           <div className="flex items-center gap-3">
             {isSuccess ? (
               <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
                 <CheckCircle2 className="w-5 h-5" />
+              </div>
+            ) : isRunning ? (
+              <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                <RefreshCw className="w-5 h-5 animate-spin" />
               </div>
             ) : (
               <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400">
@@ -70,13 +117,13 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
             )}
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-semibold text-white">
-                  Execution {result.status}
-                </h3>
+                <h3 className="text-base font-semibold text-white">Execution {result.status}</h3>
                 <span
                   className={`text-xs px-2 py-0.5 rounded font-mono font-medium ${
                     isSuccess
                       ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                      : isRunning
+                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                       : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
                   }`}
                 >
@@ -84,7 +131,12 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Completed in <span className="font-semibold text-slate-200">{result.durationMs} ms</span>
+                Duration: <span className="font-semibold text-slate-200">{formatDuration(result.durationMs)}</span>
+                {result.startedAt && (
+                  <span className="ml-2 text-slate-500">
+                    (Started {formatTimestamp(result.startedAt)})
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -103,21 +155,25 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
           <div className="flex items-center gap-2">
             <span>Execution ID:</span>
             <code className="bg-slate-900 px-2 py-0.5 rounded text-slate-300 font-mono text-[11px] border border-slate-800">
-              {result.executionId}
+              {executionId}
             </code>
             <button
               onClick={handleCopyId}
               className="text-slate-400 hover:text-slate-200 p-0.5 transition"
               title="Copy execution ID"
             >
-              {copiedId ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              {copiedId ? (
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
             </button>
           </div>
 
           <div className="flex items-center gap-4">
             <span className="flex items-center gap-1">
               <Clock className="w-3.5 h-3.5 text-slate-500" />
-              {result.nodes.length} {result.nodes.length === 1 ? 'node' : 'nodes'} executed
+              {nodesList.length} {nodesList.length === 1 ? 'node' : 'nodes'} in trace
             </span>
           </div>
         </div>
@@ -131,20 +187,24 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
         )}
 
         {/* Execution Nodes List */}
-        <div className="p-6 overflow-y-auto space-y-3">
+        <div className="p-6 overflow-y-auto space-y-3 flex-1">
           <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-            Execution Steps
+            Node-by-Node Execution Trace
           </h4>
 
-          {result.nodes.length === 0 ? (
-            <p className="text-xs text-slate-500 italic">No nodes were executed.</p>
+          {nodesList.length === 0 ? (
+            <p className="text-xs text-slate-500 italic">No node records available.</p>
           ) : (
-            result.nodes.map((node: NodeExecutionResult, index: number) => {
+            nodesList.map((node: NodeExecutionResult, index: number) => {
               const nodeSuccess = node.status === 'SUCCESS';
-              const isExpanded = expandedNodes[node.nodeId] ?? (index === result.nodes.length - 1);
-              const statusCode = node.output && typeof node.output === 'object' && 'statusCode' in node.output
-                ? (node.output as { statusCode: number }).statusCode
-                : null;
+              const nodeSkipped = node.status === 'SKIPPED';
+              const isExpanded = expandedNodes[node.nodeId] ?? (index === nodesList.length - 1);
+              const currentTab = activeTab[node.nodeId] || 'output';
+
+              const statusCode =
+                node.output && typeof node.output === 'object' && 'statusCode' in node.output
+                  ? (node.output as { statusCode: number }).statusCode
+                  : null;
 
               return (
                 <div
@@ -152,6 +212,8 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                   className={`rounded-lg border transition ${
                     nodeSuccess
                       ? 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                      : nodeSkipped
+                      ? 'bg-slate-900/30 border-slate-800/60 opacity-75'
                       : 'bg-rose-950/20 border-rose-900/40 hover:border-rose-800/60'
                   }`}
                 >
@@ -170,9 +232,9 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                           <span className="text-xs font-semibold text-white">
                             {node.nodeType === 'trigger'
                               ? 'Trigger'
-                              : node.nodeType === 'httpRequest'
+                              : node.nodeType === 'httpRequest' || node.nodeType === 'http-request'
                               ? 'HTTP Request'
-                              : 'Generic Node'}
+                              : 'Generic Step'}
                           </span>
                           <span className="text-[11px] font-mono text-slate-400">
                             ({node.nodeId})
@@ -198,6 +260,11 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                           <CheckCircle2 className="w-3.5 h-3.5" />
                           Success
                         </span>
+                      ) : nodeSkipped ? (
+                        <span className="flex items-center gap-1 text-xs text-slate-400 font-medium">
+                          <MinusCircle className="w-3.5 h-3.5 text-slate-500" />
+                          Skipped
+                        </span>
                       ) : (
                         <span className="flex items-center gap-1 text-xs text-rose-400 font-medium">
                           <XCircle className="w-3.5 h-3.5" />
@@ -206,7 +273,7 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                       )}
 
                       <span className="text-[11px] text-slate-500 font-mono">
-                        {node.durationMs} ms
+                        {nodeSkipped ? '-' : `${node.durationMs} ms`}
                       </span>
 
                       {isExpanded ? (
@@ -219,7 +286,7 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
 
                   {/* Expanded Node Details */}
                   {isExpanded && (
-                    <div className="px-4 pb-4 pt-1 border-t border-slate-800/80 text-xs space-y-2">
+                    <div className="px-4 pb-4 pt-1 border-t border-slate-800/80 text-xs space-y-2.5">
                       {node.error && (
                         <div className="p-2.5 rounded bg-rose-950/50 border border-rose-800/40 text-rose-300 font-mono text-[11px]">
                           <span className="font-semibold block mb-0.5">Error:</span>
@@ -227,14 +294,80 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
                         </div>
                       )}
 
-                      {node.output && (
+                      {nodeSkipped && !node.error && (
+                        <p className="text-slate-400 italic text-[11px] py-1">
+                          Downstream node execution was skipped due to fail-fast policy after upstream node failure.
+                        </p>
+                      )}
+
+                      {!nodeSkipped && (
                         <div>
-                          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                            Node Output:
+                          {/* Tabs for Input / Output */}
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-2">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setNodeTab(node.nodeId, 'output')}
+                                className={`text-[11px] font-semibold px-2 py-0.5 rounded transition ${
+                                  currentTab === 'output'
+                                    ? 'bg-slate-800 text-sky-400 border border-sky-500/30'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                Output
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setNodeTab(node.nodeId, 'input')}
+                                className={`text-[11px] font-semibold px-2 py-0.5 rounded transition ${
+                                  currentTab === 'input'
+                                    ? 'bg-slate-800 text-sky-400 border border-sky-500/30'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                Input
+                              </button>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const payload = currentTab === 'output' ? node.output : node.input;
+                                handleCopyJson(`${node.nodeId}-${currentTab}`, payload);
+                              }}
+                              className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition"
+                              title="Copy JSON payload"
+                            >
+                              {copiedPayload === `${node.nodeId}-${currentTab}` ? (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-400" />
+                                  <span className="text-emerald-400">Copied</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3" />
+                                  <span>Copy {currentTab}</span>
+                                </>
+                              )}
+                            </button>
                           </div>
-                          <pre className="p-2.5 rounded bg-slate-950/80 border border-slate-800/80 text-slate-300 font-mono text-[11px] overflow-x-auto max-h-48">
-                            {JSON.stringify(node.output, null, 2)}
-                          </pre>
+
+                          {/* Tab Content */}
+                          {currentTab === 'output' && (
+                            <pre className="p-2.5 rounded bg-slate-950/90 border border-slate-800/80 text-slate-300 font-mono text-[11px] overflow-x-auto max-h-48 whitespace-pre-wrap break-all">
+                              {node.output && Object.keys(node.output).length > 0
+                                ? JSON.stringify(node.output, null, 2)
+                                : '{}'}
+                            </pre>
+                          )}
+
+                          {currentTab === 'input' && (
+                            <pre className="p-2.5 rounded bg-slate-950/90 border border-slate-800/80 text-slate-300 font-mono text-[11px] overflow-x-auto max-h-48 whitespace-pre-wrap break-all">
+                              {node.input && Object.keys(node.input).length > 0
+                                ? JSON.stringify(node.input, null, 2)
+                                : '{}'}
+                            </pre>
+                          )}
                         </div>
                       )}
                     </div>
@@ -246,7 +379,12 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-slate-800 flex items-center justify-end bg-[#090d16]">
+        <div className="px-6 py-3 border-t border-slate-800 flex items-center justify-between bg-[#090d16]">
+          <div className="text-[11px] text-slate-500 font-mono">
+            {result.completedAt && (
+              <span>Completed at {new Date(result.completedAt).toLocaleString()}</span>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition"

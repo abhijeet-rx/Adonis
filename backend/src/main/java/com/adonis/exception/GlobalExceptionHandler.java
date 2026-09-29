@@ -54,6 +54,12 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(HttpStatus.NOT_FOUND.value(), "Not Found", ex.getMessage()));
     }
 
+    @ExceptionHandler(ExecutionNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleExecutionNotFound(ExecutionNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ErrorResponse.of(HttpStatus.NOT_FOUND.value(), "Not Found", ex.getMessage()));
+    }
+
     @ExceptionHandler(WorkflowValidationException.class)
     public ResponseEntity<ErrorResponse> handleWorkflowValidation(WorkflowValidationException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)

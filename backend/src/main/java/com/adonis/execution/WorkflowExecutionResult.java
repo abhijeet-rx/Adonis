@@ -14,6 +14,15 @@ public record WorkflowExecutionResult(
         List<NodeExecutionResult> nodes,
         String error
 ) {
+    @com.fasterxml.jackson.annotation.JsonProperty("id")
+    public String id() {
+        return executionId;
+    }
+
+    @com.fasterxml.jackson.annotation.JsonProperty("nodeExecutions")
+    public List<NodeExecutionResult> nodeExecutions() {
+        return nodes;
+    }
     public static WorkflowExecutionResult success(
             String executionId,
             String workflowId,

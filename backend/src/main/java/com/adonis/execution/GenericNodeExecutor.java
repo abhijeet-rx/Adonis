@@ -34,6 +34,6 @@ public class GenericNodeExecutor implements NodeExecutor {
         }
 
         Instant completedAt = Instant.now();
-        return NodeExecutionResult.success(node.getId(), node.getType(), startedAt, completedAt, output);
+        return NodeExecutionResult.success(node.getId(), node.getType(), startedAt, completedAt, input != null ? input : Map.of(), output);
     }
 }

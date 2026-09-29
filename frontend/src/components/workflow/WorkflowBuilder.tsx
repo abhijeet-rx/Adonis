@@ -27,7 +27,8 @@ import {
   AlertCircle,
   RefreshCw,
   Sparkles,
-  Play
+  Play,
+  History
 } from 'lucide-react';
 
 import {
@@ -42,11 +43,13 @@ import { GenericNode } from './GenericNode';
 import { NodePalette } from './NodePalette';
 import { NodeConfigPanel } from './NodeConfigPanel';
 import { ExecutionResultModal } from './ExecutionResultModal';
+import { ExecutionHistoryPanel } from './ExecutionHistoryPanel';
 import {
   workflowApi,
   type Workflow,
   type WorkflowStatus,
-  type WorkflowExecutionResult
+  type WorkflowExecutionResult,
+  type ExecutionResponse
 } from '../../services/workflowService';
 
 interface WorkflowBuilderProps {
@@ -80,10 +83,15 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
   // Dirty state tracking
   const [isDirty, setIsDirty] = useState(false);
 
-  // Execution state (Phase 4)
+  // Execution state (Phase 4 & 5)
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<WorkflowExecutionResult | null>(null);
+  const [activeExecutionDetail, setActiveExecutionDetail] = useState<
+    WorkflowExecutionResult | ExecutionResponse | null
+  >(null);
   const [showExecutionModal, setShowExecutionModal] = useState(false);
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [historyRefreshTrigger, setHistoryRefreshTrigger] = useState(0);
 
   // React Flow state
   const [nodes, setNodes, onNodesChangeOriginal] = useNodesState<Node<CustomNodeData>>([]);
@@ -349,7 +357,9 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
 
       const result = await workflowApi.executeWorkflow(workflow.id, token);
       setExecutionResult(result);
+      setActiveExecutionDetail(result);
       setShowExecutionModal(true);
+      setHistoryRefreshTrigger((prev) => prev + 1);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Execution failed';
       setErrorMessage(msg);
@@ -485,13 +495,33 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
             <span>{isExecuting ? 'Running...' : 'Run Workflow'}</span>
           </button>
 
+          <button
+            onClick={() => setShowHistoryPanel((prev) => !prev)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition border ${
+              showHistoryPanel
+                ? 'bg-sky-500/20 text-sky-400 border-sky-500/40 shadow-sm'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+            }`}
+            title="Toggle execution history logs"
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>History</span>
+          </button>
+
           {executionResult && !isExecuting && (
             <button
-              onClick={() => setShowExecutionModal(true)}
+              onClick={() => {
+                setActiveExecutionDetail(executionResult);
+                setShowExecutionModal(true);
+              }}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition border border-slate-700"
               title="View last execution result"
             >
-              <span className={`w-2 h-2 rounded-full ${executionResult.status === 'SUCCESS' ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  executionResult.status === 'SUCCESS' ? 'bg-emerald-400' : 'bg-rose-400'
+                }`}
+              />
               <span className="hidden xl:inline">Result</span>
             </button>
           )}
@@ -611,13 +641,31 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
             onClose={() => setSelectedNodeId(null)}
           />
         )}
+
+        {/* Right: Execution History Panel (Phase 5) */}
+        {workflow && (
+          <ExecutionHistoryPanel
+            workflowId={workflow.id}
+            token={token}
+            isOpen={showHistoryPanel}
+            onClose={() => setShowHistoryPanel(false)}
+            refreshTrigger={historyRefreshTrigger}
+            onSelectExecution={(exec) => {
+              setActiveExecutionDetail(exec);
+              setShowExecutionModal(true);
+            }}
+          />
+        )}
       </div>
 
-      {/* Execution Result Modal (Phase 4) */}
-      {showExecutionModal && executionResult && (
+      {/* Execution Result Modal (Phase 4 & 5) */}
+      {showExecutionModal && (activeExecutionDetail || executionResult) && (
         <ExecutionResultModal
-          result={executionResult}
-          onClose={() => setShowExecutionModal(false)}
+          result={(activeExecutionDetail || executionResult)!}
+          onClose={() => {
+            setShowExecutionModal(false);
+            setActiveExecutionDetail(null);
+          }}
         />
       )}
     </div>

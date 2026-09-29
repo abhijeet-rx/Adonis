@@ -201,3 +201,24 @@ This document records the architectural and technical decisions made during the 
 * **Consequences**:
   - Positive: High simplicity, zero external queue dependencies, deterministic testability (with JDK local `HttpServer`), robust multi-tenant ownership enforcement (`findByIdAndUserId`).
   - Trade-off: Long-running or heavy workflows are constrained by HTTP request lifecycle until asynchronous workers (Phase 7) are introduced.
+
+---
+
+## Phase 5: Execution History & Logs
+
+### ADR-017: Persistent Workflow Execution History, Granular Node Logs, and Secret Redaction
+* **Date**: 2026-09-29
+* **Status**: Accepted
+* **Context**: In Phase 4, execution results were transient, returned immediately in the HTTP response (`POST /api/workflows/{id}/execute`) without persistent storage. Refreshing the browser or navigating away lost all execution context. Phase 5 requires persistent, queryable execution history, audit logs, node-level diagnostics, duration metrics, and visibility into which nodes succeeded, failed, or were skipped due to fail-fast execution.
+* **Decision**:
+  - **Dedicated Collection (`workflow_executions`)**: Store execution runs in a separate `workflow_executions` MongoDB collection rather than embedding arrays in the `Workflow` document. This avoids unbounded document growth in `workflows` and cleanly separates mutable graph definitions from immutable execution records.
+  - **Execution Document Lifecycle**: An execution document is created in MongoDB with `RUNNING` status when execution begins. Upon engine completion, the document is updated with `SUCCESS` or `FAILED`, completion timestamp, duration in milliseconds, and the complete node-by-node execution trace.
+  - **Fail-Fast & Skipped Node Accounting**: If a node fails, execution terminates immediately. The failed node records its error, and all subsequent unexecuted nodes in the planned topological order are persisted with `status: SKIPPED`, `durationMs: 0`, and empty inputs/outputs, making execution flow and skipping visible in the UI.
+  - **Deep Secret Redaction (`SecretRedactor`)**: To prevent credential leakage into audit logs, input and output maps are recursively sanitized prior to persistence. Case-insensitive sensitive keys (e.g. `authorization`, `password`, `apiKey`, `token`, `secret`, `cookie`) and values matching Bearer or JWT formats are redacted to `[REDACTED]`.
+  - **Strict Ownership Isolation**: Lookups use `findByIdAndUserId` and `findByWorkflowIdAndUserId`, extracting the authenticated principal from the verified JWT token. Unauthorized or nonexistent executions return `404 Not Found` without revealing document existence.
+  - **Separation of List Summaries and Detail Payloads**: Listing endpoints (`GET /api/workflows/{id}/executions`, `GET /api/executions`) return lightweight summaries (`ExecutionSummaryResponse`) with pagination (`page`, `size`, `startedAt DESC`). Full node payloads are only loaded upon requesting single execution detail (`GET /api/executions/{id}`).
+  - **Synchronous In-Process Execution Kept**: Execution remains synchronous and in-process. Redis and asynchronous worker queues remain deferred to Phase 7.
+* **Consequences**:
+  - Positive: Execution history survives browser reloads; developers can inspect historical node outputs and errors; credentials are protected; multi-tenant security is strictly maintained.
+  - Trade-off: Storage requirements increase with execution frequency; retention/cleanup policies are deferred to future operational hardening phases.
+

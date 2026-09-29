@@ -27,9 +27,13 @@ public class WorkflowExecutionEngine {
      * @return structured WorkflowExecutionResult
      */
     public WorkflowExecutionResult execute(Workflow workflow, List<WorkflowNode> executionOrder, String userId) {
+        return execute(workflow, executionOrder, userId, UUID.randomUUID().toString());
+    }
+
+    public WorkflowExecutionResult execute(Workflow workflow, List<WorkflowNode> executionOrder, String userId, String executionId) {
         Instant startedAt = Instant.now();
-        String executionId = UUID.randomUUID().toString();
-        ExecutionContext context = new ExecutionContext(executionId, workflow.getId(), userId, startedAt);
+        String effectiveExecutionId = executionId != null ? executionId : UUID.randomUUID().toString();
+        ExecutionContext context = new ExecutionContext(effectiveExecutionId, workflow.getId(), userId, startedAt);
 
         // Map node ID to list of upstream node IDs targeting it
         Map<String, List<String>> upstreamMap = new HashMap<>();
@@ -68,7 +72,7 @@ public class WorkflowExecutionEngine {
                 String errorMessage = "Node '" + node.getId() + "' [" + node.getType() + "] failed: " +
                         (nodeResult.error() != null ? nodeResult.error() : "Unknown error");
                 return WorkflowExecutionResult.failure(
-                        executionId,
+                        effectiveExecutionId,
                         workflow.getId(),
                         startedAt,
                         completedAt,
@@ -80,7 +84,7 @@ public class WorkflowExecutionEngine {
 
         Instant completedAt = Instant.now();
         return WorkflowExecutionResult.success(
-                executionId,
+                effectiveExecutionId,
                 workflow.getId(),
                 startedAt,
                 completedAt,

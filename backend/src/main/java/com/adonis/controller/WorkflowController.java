@@ -81,6 +81,25 @@ public class WorkflowController {
         return ResponseEntity.ok(result);
     }
 
+    @GetMapping("/{id}/executions")
+    public ResponseEntity<com.adonis.dto.PageResponse<com.adonis.dto.ExecutionSummaryResponse>> getWorkflowExecutions(
+            @PathVariable String id,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            Authentication authentication) {
+        UserPrincipal principal = getAuthenticatedPrincipal(authentication);
+        int safePage = Math.max(0, page);
+        int safeSize = Math.min(Math.max(1, size), 100);
+        org.springframework.data.domain.Pageable pageable = org.springframework.data.domain.PageRequest.of(
+                safePage,
+                safeSize,
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "startedAt")
+        );
+        com.adonis.dto.PageResponse<com.adonis.dto.ExecutionSummaryResponse> response =
+                executionService.getWorkflowExecutions(id, principal.id(), pageable);
+        return ResponseEntity.ok(response);
+    }
+
     private UserPrincipal getAuthenticatedPrincipal(Authentication authentication) {
         if (authentication == null || !(authentication.getPrincipal() instanceof UserPrincipal principal)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User not authenticated");

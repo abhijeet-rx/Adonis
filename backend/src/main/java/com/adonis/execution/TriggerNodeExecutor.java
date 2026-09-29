@@ -27,6 +27,6 @@ public class TriggerNodeExecutor implements NodeExecutor {
         output.put("data", input != null && !input.isEmpty() ? input : Map.of());
 
         Instant completedAt = Instant.now();
-        return NodeExecutionResult.success(node.getId(), node.getType(), startedAt, completedAt, output);
+        return NodeExecutionResult.success(node.getId(), node.getType(), startedAt, completedAt, input, output);
     }
 }
