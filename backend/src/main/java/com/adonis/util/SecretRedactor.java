@@ -32,7 +32,10 @@ public final class SecretRedactor {
             "cookie",
             "setcookie",
             "bearer",
-            "authentication"
+            "authentication",
+            "openaikey",
+            "geminikey",
+            "xgoogapikey"
     );
 
     // PEM Private Key pattern
@@ -47,7 +50,7 @@ public final class SecretRedactor {
 
     // Authorization / Proxy-Authorization / Authentication headers in text
     private static final Pattern AUTH_HEADER_PATTERN = Pattern.compile(
-            "(?i)\\b(Authorization|Proxy-Authorization|Authentication)\\s*:\\s*(?!\\[REDACTED\\])[^\\r\\n,;]+"
+            "(?i)\\b(Authorization|Proxy-Authorization|Authentication|x-goog-api-key)\\s*:\\s*(?!\\[REDACTED\\])[^\\r\\n,;]+"
     );
 
     // Standalone Bearer header value
@@ -69,6 +72,16 @@ public final class SecretRedactor {
     // Embedded JWT token (standard 3-segment base64url starting with eyJ)
     private static final Pattern EMBEDDED_JWT_PATTERN = Pattern.compile(
             "\\beyJ[a-zA-Z0-9_-]{8,}\\.[a-zA-Z0-9_-]{8,}\\.[a-zA-Z0-9_-]{8,}\\b"
+    );
+
+    // OpenAI API Key pattern: sk-...
+    private static final Pattern OPENAI_KEY_PATTERN = Pattern.compile(
+            "\\bsk-[a-zA-Z0-9_-]{20,}\\b"
+    );
+
+    // Google Gemini API Key pattern: AIzaSy...
+    private static final Pattern GEMINI_KEY_PATTERN = Pattern.compile(
+            "\\bAIzaSy[a-zA-Z0-9_-]{33}\\b"
     );
 
     private SecretRedactor() {
@@ -167,6 +180,8 @@ public final class SecretRedactor {
         result = EMBEDDED_BEARER_PATTERN.matcher(result).replaceAll("Bearer " + REDACTED_VALUE);
         result = KEY_VALUE_SECRET_PATTERN.matcher(result).replaceAll("$1$2" + REDACTED_VALUE);
         result = EMBEDDED_JWT_PATTERN.matcher(result).replaceAll(REDACTED_VALUE);
+        result = OPENAI_KEY_PATTERN.matcher(result).replaceAll(REDACTED_VALUE);
+        result = GEMINI_KEY_PATTERN.matcher(result).replaceAll(REDACTED_VALUE);
 
         return result;
     }

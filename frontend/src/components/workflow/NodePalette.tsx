@@ -1,5 +1,5 @@
 import React from 'react';
-import { Zap, Globe, Box, Plus } from 'lucide-react';
+import { Zap, Globe, Box, Plus, Sparkles, Brain } from 'lucide-react';
 import { NODE_TYPES } from './workflowAdapter';
 
 interface NodePaletteProps {
@@ -26,6 +26,24 @@ export const NodePalette: React.FC<NodePaletteProps> = ({ onAddNode }) => {
       icon: <Zap className="w-4 h-4 text-amber-400" />,
       borderHover: 'hover:border-amber-500/50',
       badgeStyle: 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+    },
+    {
+      type: NODE_TYPES.AI_TEXT_GENERATION,
+      label: 'AI Text Generation',
+      category: 'AI',
+      description: 'Generates text completions with OpenAI or Gemini',
+      icon: <Sparkles className="w-4 h-4 text-purple-400" />,
+      borderHover: 'hover:border-purple-500/50',
+      badgeStyle: 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+    },
+    {
+      type: NODE_TYPES.AI_STRUCTURED_OUTPUT,
+      label: 'AI Structured Output',
+      category: 'AI',
+      description: 'Extracts structured JSON conforming to a JSON schema',
+      icon: <Brain className="w-4 h-4 text-fuchsia-400" />,
+      borderHover: 'hover:border-fuchsia-500/50',
+      badgeStyle: 'bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/20'
     },
     {
       type: NODE_TYPES.HTTP_REQUEST,

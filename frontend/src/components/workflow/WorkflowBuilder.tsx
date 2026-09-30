@@ -41,6 +41,8 @@ import {
 import { TriggerNode } from './TriggerNode';
 import { HttpRequestNode } from './HttpRequestNode';
 import { GenericNode } from './GenericNode';
+import { AITextGenerationNode } from './AITextGenerationNode';
+import { AIStructuredOutputNode } from './AIStructuredOutputNode';
 import { NodePalette } from './NodePalette';
 import { NodeConfigPanel } from './NodeConfigPanel';
 import { ExecutionResultModal } from './ExecutionResultModal';
@@ -120,7 +122,9 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
     () => ({
       [NODE_TYPES.TRIGGER]: TriggerNode,
       [NODE_TYPES.HTTP_REQUEST]: HttpRequestNode,
-      [NODE_TYPES.GENERIC]: GenericNode
+      [NODE_TYPES.GENERIC]: GenericNode,
+      [NODE_TYPES.AI_TEXT_GENERATION]: AITextGenerationNode,
+      [NODE_TYPES.AI_STRUCTURED_OUTPUT]: AIStructuredOutputNode
     }),
     []
   );

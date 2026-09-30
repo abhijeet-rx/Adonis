@@ -16,6 +16,10 @@ services:
       - REDIS_STREAM_NAME=adonis:execution:stream
       - REDIS_CONSUMER_GROUP=adonis-workers
       - JWT_SECRET=${JWT_SECRET}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AI_CONNECT_TIMEOUT_MS=${AI_CONNECT_TIMEOUT_MS:-10000}
+      - AI_READ_TIMEOUT_MS=${AI_READ_TIMEOUT_MS:-60000}
     depends_on:
       - mongodb
       - redis

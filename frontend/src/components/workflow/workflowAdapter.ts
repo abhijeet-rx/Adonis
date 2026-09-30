@@ -9,13 +9,24 @@ export interface CustomNodeData extends Record<string, unknown> {
   triggerType?: string;
   retry?: RetryConfig;
   retryConfig?: RetryConfig;
+  // Phase 9: AI Node Configuration
+  provider?: 'openai' | 'gemini';
+  model?: string;
+  systemPrompt?: string;
+  userPrompt?: string;
+  prompt?: string;
+  temperature?: number;
+  maxTokens?: number;
+  jsonSchema?: string;
   [key: string]: unknown;
 }
 
 export const NODE_TYPES = {
   TRIGGER: 'trigger',
   HTTP_REQUEST: 'httpRequest',
-  GENERIC: 'generic'
+  GENERIC: 'generic',
+  AI_TEXT_GENERATION: 'ai_text_generation',
+  AI_STRUCTURED_OUTPUT: 'ai_structured_output'
 } as const;
 
 /**
@@ -34,6 +45,10 @@ export function workflowToReactFlow(workflow: Workflow): {
         ? 'Manual Trigger'
         : node.type === NODE_TYPES.HTTP_REQUEST
         ? 'HTTP Request'
+        : node.type === NODE_TYPES.AI_TEXT_GENERATION
+        ? 'AI Text Generation'
+        : node.type === NODE_TYPES.AI_STRUCTURED_OUTPUT
+        ? 'AI Structured Output'
         : 'Generic Step';
 
     const nodeData: CustomNodeData = {

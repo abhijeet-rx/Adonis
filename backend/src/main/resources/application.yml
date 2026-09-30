@@ -33,6 +33,16 @@ adonis:
     polling-interval-ms: ${SCHEDULER_POLLING_INTERVAL_MS:10000}
   webhook:
     max-body-size-bytes: ${WEBHOOK_MAX_BODY_SIZE_BYTES:1048576}
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+    gemini:
+      api-key: ${GEMINI_API_KEY:}
+      base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com/v1beta}
+    timeout:
+      connect-ms: ${AI_CONNECT_TIMEOUT_MS:10000}
+      read-ms: ${AI_READ_TIMEOUT_MS:60000}
 
 management:
   endpoints:

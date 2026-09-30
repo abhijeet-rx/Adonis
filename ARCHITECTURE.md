@@ -16,11 +16,11 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-## 2. Current Architecture (Phase 8 Operational)
+### 2. Current Architecture (Phase 9 Operational)
 
-In Phase 8, the operational system topology adds a dedicated **Trigger Layer** (`Manual API`, `Scheduler`, and `Webhook API`) producing execution events into the unified Redis Streams asynchronous execution pipeline:
+In Phase 9, the operational system topology adds a provider-neutral **AI Execution Layer** (`OpenAIProvider`, `GeminiProvider`, `PromptInterpolator`, `JsonSchemaValidator`) seamlessly integrated as standard `NodeExecutor` implementations within the unified execution pipeline:
 
-### Trigger Layer Architecture
+### Trigger & Execution Layer Architecture
 
 ```text
                  ┌───────────────┐
@@ -45,8 +45,12 @@ In Phase 8, the operational system topology adds a dedicated **Trigger Layer** (
                   ExecutionWorker
                          │
                          ▼
-              WorkflowExecutionEngine
-                         │
+               WorkflowExecutionEngine
+               ┌─────────┴─────────┐
+               ▼                   ▼
+        Standard Nodes        AI Nodes (OpenAI, Gemini)
+               │                   │
+               └─────────┬─────────┘
                          ▼
                       MongoDB
 ```
@@ -56,8 +60,9 @@ In Phase 8, the operational system topology adds a dedicated **Trigger Layer** (
 ```text
 React (Vite + TypeScript + Tailwind + @xyflow/react)
    ├── Visual Workflow Builder (Canvas, MiniMap, Controls, Background)
-   ├── Node Palette (Trigger, HTTP Request, Generic) & Node Config Drawer
+   ├── Node Palette (Trigger, HTTP Request, Generic, AI Text Gen, AI Structured Output) & Config Drawer
    ├── Trigger Configuration (Manual, Cron Schedule, Webhook Capability URL & Secret)
+   ├── AI Configuration (Provider, Model, Prompts, Temperature, Tokens, JSON Schema)
    ├── Run Workflow Action, Execution Results Modal & Execution History Panel
    └── Polling Client (1.5s interval until SUCCESS or FAILED)
    ↓ HTTP / JSON (Bearer JWT, CORS-enabled, 202 Accepted)
@@ -79,11 +84,17 @@ Consumer Group (adonis-workers, XREADGROUP, PEL crash recovery)
 ExecutionWorker (SmartLifecycle, Atomic findAndModify QUEUED -> RUNNING, XACK on persistent completion)
    ↓
 Execution Engine (Topological Sort, RetryPolicy, Fail-Fast Runner)
-   ├── WorkflowExecutionValidator (7-rule graph & trigger validation)
+   ├── WorkflowExecutionValidator (7-rule graph, trigger, and node-level schema validation)
    ├── WorkflowExecutionEngine (sequential execution, upstream resolution & TriggerContext injection)
-   ├── NodeExecutors: TriggerNodeExecutor, HttpRequestNodeExecutor, GenericNodeExecutor
-   ├── RetryPolicy (Phase 6 exponential backoff, attempt tracking, and failure classification)
-   └── SecretRedactor (deep sanitization of sensitive headers, tokens, and credentials)
+   ├── NodeExecutors:
+   │   ├── TriggerNodeExecutor (Manual, Schedule, Webhook)
+   │   ├── HttpRequestNodeExecutor (real outbound HTTP via native HttpClient)
+   │   ├── GenericNodeExecutor (safe pass-through)
+   │   ├── AITextGenerationNodeExecutor (OpenAI / Gemini text generation)
+   │   └── AIStructuredOutputNodeExecutor (OpenAI / Gemini structured JSON with schema validation)
+   ├── AI Provider Layer (AIProvider SPI, OpenAIProvider, GeminiProvider, PromptInterpolator)
+   ├── RetryPolicy (exponential backoff, attempt tracking, and failure classification)
+   └── SecretRedactor (deep sanitization of sensitive headers, tokens, and OpenAI/Gemini credentials)
    ↓
 MongoDB (Spring Data MongoDB, 7.0 container)
    ├── Collection: users (unique index on lowercase email)
@@ -109,7 +120,10 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Retries & Failure Handling** | **Operational** (Exponential backoff, failure classification, attempt tracking) | Phase 6 (Completed) |
 | **Redis Asynchronous Workers** | **Operational** (Redis 7, ExecutionQueue, ExecutionWorker, 202 Accepted, Idempotency) | Phase 7 (Completed) |
 | **Scheduling & Webhooks** | **Operational** (Cron, Timezones, Capability URLs, Secret Auth, Idempotency) | Phase 8 (Completed) |
-| **AI Intelligent Nodes** | *NOT Implemented* | Phase 9 (AI Nodes) |
+| **AI Intelligent Nodes** | **Operational** (`ai_text_generation`, `ai_structured_output`, OpenAI & Gemini SPI) | Phase 9 (Completed) |
+| **Automated Testing & Testcontainers** | *NOT Implemented* | Phase 10 (Testcontainers deferred to Phase 10) |
+| **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |
+| **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |**AI Intelligent Nodes** | *NOT Implemented* | Phase 9 (AI Nodes) |
 | **Automated Testing & Testcontainers** | *NOT Implemented* | Phase 10 (Testcontainers deferred to Phase 10) |
 | **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |
 | **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |
@@ -578,4 +592,173 @@ Phase 8 and 8.1 introduce two production trigger producers (the centralized Cron
 
 4. **Schedule-Aware Recovery Fire Time Advancement (Fix #4)**:
    Recovery of `FAILED_RETRYABLE` occurrences now checks whether the occurrence's `scheduledFireTime` is still relevant to the current workflow schedule before advancing fire times. If the schedule has changed (current `nextFireTime` has moved past the occurrence), the execution is still recovered (the `WorkflowExecution` document was already created), but fire times are NOT advanced. Fire time writes use `conditionalAdvanceFireTimes(...)` with a guard matching the expected `nextFireTime`.
+
+---
+
+## 11. AI Node Architecture (Phase 9 Operational)
+
+Phase 9 integrates native AI capabilities into Adonis workflows via two dedicated node types: `ai_text_generation` and `ai_structured_output`.
+
+### 11.1 Architectural Principles
+
+1. **Standard NodeExecutor Integration**:
+   AI nodes are not processed by a separate external engine or out-of-band runner. They implement the standard `NodeExecutor` interface (`AITextGenerationNodeExecutor`, `AIStructuredOutputNodeExecutor`) and execute inside the core `WorkflowExecutionEngine`.
+2. **Inherited Resiliency & Infrastructure**:
+   AI nodes natively leverage:
+   - Topological sorting and data flow resolution
+   - Redis Streams asynchronous worker pool (`ExecutionWorker`)
+   - Configurable exponential backoff (`RetryPolicy`)
+   - Intelligent error classification (`FailureClassifier`)
+   - Granular execution attempt journaling and skipped node tracking
+   - Deep secret redaction (`SecretRedactor`)
+3. **Provider-Agnostic SPI**:
+   Adonis decouples workflow logic from LLM vendors via a lightweight Service Provider Interface:
+   - `AIProvider`: Common contract declaring `providerId()`, `supportsModel()`, `generate(AIRequest request)`.
+   - `AIRequest`: Normalized immutable request with builder.
+   - `AIResponse`: Normalized immutable response with token usage metrics.
+   - `AIProviderService`: Central Spring bean registry routing requests dynamically to the configured provider implementation.
+4. **Zero Vendor SDK Bloat**:
+   Providers use standard Java 21 `java.net.http.HttpClient` with configurable timeouts (`adonis.ai.timeout-seconds`). No heavy vendor SDKs are added to the runtime classpath.
+
+### 11.2 Component Topology
+
+```text
+                        ┌────────────────────────┐
+                        │ WorkflowExecutionEngine│
+                        └───────────┬────────────┘
+                                    │
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │         NodeExecutor         │
+                     ├──────────────┬───────────────┤
+                     │ Text Gen     │ Structured    │
+                     └──────┬───────┴───────┬───────┘
+                            │               │
+                            ▼               ▼
+                     PromptInterpolator   JsonSchemaValidator
+                            │               │
+                            └───────┬───────┘
+                                    ▼
+                           AIProviderService
+                                    │
+                       ┌────────────┴────────────┐
+                       ▼                         ▼
+                 OpenAIProvider            GeminiProvider
+                 (Bearer auth)          (x-goog-api-key header)
+                       │                         │
+                       ▼                         ▼
+                  OpenAI API                Gemini API
+```
+
+### 11.3 AI Node Types & Data Contracts
+
+#### 1. AI Text Generation (`ai_text_generation`)
+- **Node Configuration**:
+  ```json
+  {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "systemPrompt": "You are a helpful customer support agent.",
+    "userPrompt": "Analyze user sentiment: {{http_1.output.body.comment}}",
+    "temperature": 0.7,
+    "maxTokens": 1000
+  }
+  ```
+- **Execution Output**:
+  ```json
+  {
+    "content": "The sentiment is positive.",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "usage": {
+      "promptTokens": 28,
+      "completionTokens": 6,
+      "totalTokens": 34
+    }
+  }
+  ```
+
+#### 2. AI Structured Output (`ai_structured_output`)
+- **Node Configuration**:
+  ```json
+  {
+    "provider": "gemini",
+    "model": "gemini-1.5-flash",
+    "systemPrompt": "Extract user profile details.",
+    "userPrompt": "Extract info from: {{trigger.output.message}}",
+    "jsonSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "age": { "type": "integer" }
+      },
+      "required": ["name", "age"]
+    }
+  }
+  ```
+- **Execution Output**:
+  ```json
+  {
+    "content": "{\"name\": \"Alice\", \"age\": 30}",
+    "structured": {
+      "name": "Alice",
+      "age": 30
+    },
+    "provider": "gemini",
+    "model": "gemini-1.5-flash",
+    "usage": {
+      "promptTokens": 45,
+      "completionTokens": 12,
+      "totalTokens": 57
+    }
+  }
+  ```
+
+### 11.4 Prompt Interpolation
+
+The `PromptInterpolator` resolves runtime expressions against upstream node outputs and trigger contexts:
+- `{{nodeId.output.property}}` → Nested property lookup (e.g. `{{http_1.output.body.data[0].id}}`).
+- `{{nodeId.output}}` → Full string or serialized JSON representation.
+- `{{input.key}}` or `{{trigger.output.key}}` → Trigger context properties.
+- Unresolved placeholders are cleanly resolved to empty strings without failing execution.
+- Dynamically interpolated values are sanitized via `SecretRedactor` to prevent accidental credential leakage into external LLM prompts.
+
+### 11.5 Structured Output Schema Validation
+
+The `JsonSchemaValidator` enforces strict contract conformity on structured outputs:
+1. Strips markdown fences (e.g. ```json ... ```) automatically.
+2. Validates JSON well-formedness; syntax errors immediately fail node execution.
+3. Validates against schema definitions:
+   - Root type (`object`, `array`, `string`, `number`, `integer`, `boolean`)
+   - `required` field presence
+   - Property data types
+   - `enum` allowed values
+4. Non-conforming payloads throw `ValidationException`, failing the node with diagnostic field paths.
+
+### 11.6 Failure Classification & Retry Handling
+
+The `FailureClassifier` governs AI node retry behavior:
+- **Retryable (Exponential Backoff)**:
+  - HTTP 429 Too Many Requests (Rate Limits)
+  - Google Gemini `RESOURCE_EXHAUSTED` status
+  - HTTP 500, 502, 503, 504 (Server Errors)
+  - Connection timeouts, read timeouts, socket disconnects
+- **Non-Retryable (Immediate Fail-Fast)**:
+  - HTTP 400 Bad Request
+  - HTTP 401 Unauthorized / HTTP 403 Forbidden (Invalid credentials)
+  - HTTP 404 Not Found (Invalid model or endpoint)
+  - Missing provider API keys (`IllegalStateException`)
+  - Schema validation failure (`ValidationException`)
+
+### 11.7 Security & Credential Isolation
+
+- **Server-Side API Keys Only**:
+  API keys are configured exclusively via server environment variables (`OPENAI_API_KEY`, `GEMINI_API_KEY`).
+- **Graph Rejection**:
+  `WorkflowExecutionValidator` inspects node configurations; any attempt to submit an API key in node config is rejected with `WorkflowValidationException` before graph execution.
+- **Header-Based Gemini Authentication**:
+  `GeminiProvider` sends the key via `x-goog-api-key` header rather than URL query parameters, preventing key exposure in server access logs, network proxies, and debugging traces.
+- **Deep Redaction**:
+  `SecretRedactor` scrubs OpenAI patterns (`sk-...`), Gemini patterns (`AIzaSy...`), and `x-goog-api-key` headers from all execution attempt traces, outputs, and log entries before persistence.
+
 

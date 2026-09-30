@@ -517,4 +517,54 @@ This document records the architectural and technical decisions made during the 
   - Positive: Eliminates all identified stale-snapshot write paths in the scheduler; conditional updates are idempotent and safe under concurrent scheduler instances; user schedule modifications are never overwritten by stale scheduler computations; existing execution recovery continues to work for orphaned `FAILED_RETRYABLE` occurrences even after schedule changes.
   - Trade-off: When a conditional update fails (because the schedule changed concurrently), the scheduler silently skips the operation and logs the decision. The next scheduler tick will pick up the fresh state from MongoDB and proceed correctly.
 
+---
+
+## ADR-026: Phase 9 — Provider-Agnostic AI Node Architecture
+
+* **Status**: Accepted
+* **Date**: 2026-09-30
+* **Context**:
+  Workflows in Adonis require integrating Large Language Model (LLM) capabilities to perform automated text generation and structured data extraction.
+  Key architectural requirements:
+  1. *Unified Execution Model*: AI capabilities must not run as a distinct engine or bypass the pipeline. They must execute as standard `NodeExecutor` components inside the existing `WorkflowExecutionEngine`.
+  2. *Inherited Resiliency*: AI nodes must natively inherit the topological sorter, data flow propagation, Redis Streams asynchronous worker pool, `RetryPolicy`, `FailureClassifier`, execution history journaling, and `SecretRedactor`.
+  3. *Provider-Neutral SPI*: Adonis must avoid locking into a single LLM vendor or bloating backend dependencies with vendor-specific client libraries (e.g. LangChain4j, OpenAI Java SDK, Google GenAI SDK).
+  4. *Prompt Interpolation*: Support dynamic expressions such as `{{nodeId.output.property}}`, `{{nodeId.output}}`, and `{{input.key}}` evaluated against upstream node outputs and trigger contexts.
+  5. *Strict Structured Output Schema Validation*: For structured output nodes, non-conforming or malformed JSON responses from LLMs must fail the node execution with clear, diagnostic error messages.
+  6. *Strict Zero-Trust Credential Security*: API keys must never be stored in workflow graph documents, client payloads, execution records, logs, or frontend state. Keys are strictly server-side environment variables.
+* **Decision**:
+  - **Provider-Neutral SPI & Factory Architecture**:
+    Defined an extensible provider SPI:
+    - `AIProvider`: Common interface declaring `providerId()`, `supportsModel()`, `generate(AIRequest request)`.
+    - `AIRequest`: Normalized value object with builder (`provider`, `model`, `systemPrompt`, `userPrompt`, `temperature`, `maxTokens`, `jsonSchema`, `metadata`).
+    - `AIResponse`: Normalized record (`content`, `structuredData`, `rawResponse`, `usage`, `model`, `provider`).
+    - `AIUsage`: Token utilization record (`promptTokens`, `completionTokens`, `totalTokens`).
+    - `AIProviderService`: Spring bean registry routing requests dynamically to the appropriate `AIProvider` bean by provider identifier.
+  - **Zero-Dependency Native HTTP Clients**:
+    Implemented `OpenAIProvider` and `GeminiProvider` using Java 21's native `java.net.http.HttpClient` with configurable connection and response read timeouts (`adonis.ai.timeout-seconds`). No vendor SDKs are added to `pom.xml`.
+  - **Gemini Header-Based Authentication**:
+    The Gemini API key is securely transmitted via the `x-goog-api-key` HTTP header rather than the `?key=` query parameter. This ensures the credential is never exposed in request URIs, reverse proxy access logs, or debugging traces.
+  - **Standard NodeExecutor Integration**:
+    - `AITextGenerationNodeExecutor` handles `ai_text_generation`.
+    - `AIStructuredOutputNodeExecutor` handles `ai_structured_output`.
+    - Pre-flight validation hook: Added `default void validate(WorkflowNode node)` to `NodeExecutor`, invoked by `WorkflowExecutionValidator` during workflow graph compilation. This catches missing providers, missing models, missing prompts, invalid JSON schemas, and client-supplied API keys upfront.
+  - **Client-Side Key Prohibition**:
+    Workflow definitions that attempt to specify API keys in node configurations (e.g., `apiKey`, `api_key`, `secretKey`, `token`) are rejected immediately by `validate()` with a `WorkflowValidationException`.
+  - **Prompt Interpolator**:
+    `PromptInterpolator` uses compiled regex to resolve variables against upstream node outputs (`{{nodeId.output.prop}}` or `{{nodeId.output}}`) and trigger input (`{{input.key}}`). Unresolved placeholders are cleanly resolved to empty strings, and inputs are sanitized via `SecretRedactor` to prevent accidental credential leakage in prompts.
+  - **Lightweight JSON Schema Validator**:
+    `JsonSchemaValidator` performs strict structural validation against standard JSON Schema types (`object`, `array`, `string`, `number`, `integer`, `boolean`), `required` fields, property types, and enum values using Jackson `JsonNode`. It automatically strips markdown code fences (```json ... ```) frequently emitted by LLMs prior to parsing.
+  - **Failure Classification & Retries**:
+    Integrated with `FailureClassifier`:
+    - *Retryable*: HTTP 429 (rate limit), 5xx (server errors), `RESOURCE_EXHAUSTED`, network timeouts, connection resets. These trigger exponential backoff according to the node's `RetryConfig`.
+    - *Non-Retryable*: HTTP 400, 401, 403, 404, missing API keys, invalid models, and JSON schema validation failures.
+  - **Deep Redaction**:
+    Enhanced `SecretRedactor` with specialized regex patterns for OpenAI API keys (`sk-[A-Za-z0-9_-]{20,}`), Google Gemini API keys (`AIzaSy[A-Za-z0-9_-]{33}`), and `x-goog-api-key` headers across execution records and logs.
+  - **Visual Frontend Builder Integration**:
+    Created `AITextGenerationNode` and `AIStructuredOutputNode` custom React Flow node components with model badges, token controls, JSON schema editor, prompt preview, and variable reference helpers.
+* **Consequences**:
+  - Positive: High performance, zero bloat, multi-provider extensibility, unified error handling and retry mechanics, bulletproof credential safety, and first-class developer visual experience.
+  - Trade-off: Advanced JSON schema keywords (e.g., `oneOf`, `anyOf`, regex patterns) are not evaluated by the lightweight custom validator, but standard object/array schemas are fully supported with zero external dependencies.
+
+
 

@@ -48,14 +48,15 @@ public class WorkflowExecutionValidator {
             nodeMap.put(node.getId(), node);
         }
 
-        // 2. Check supported node types
+        // 2. Check supported node types and validate node configuration
         for (WorkflowNode node : nodes) {
-            boolean supported = executors.stream().anyMatch(e -> e.supports(node.getType()));
-            if (!supported) {
-                throw new WorkflowValidationException(
-                        "Unsupported node type '" + node.getType() + "' on node '" + node.getId() + "'"
-                );
-            }
+            NodeExecutor executor = executors.stream()
+                    .filter(e -> e.supports(node.getType()))
+                    .findFirst()
+                    .orElseThrow(() -> new WorkflowValidationException(
+                            "Unsupported node type '" + node.getType() + "' on node '" + node.getId() + "'"
+                    ));
+            executor.validate(node);
         }
 
         // 3. Check exactly one trigger node

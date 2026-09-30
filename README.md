@@ -8,13 +8,16 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 8.1.2 — Scheduler State Consistency Hardening** *(Completed)*
+**Phase 9 — AI Nodes** *(Completed)*
 
-This phase fixes four scheduler state consistency issues discovered during a final audit of the Phase 8.1.1 implementation:
-- **`matchedCount` for Conditional Verification**: Changed `modifiedCount` to `matchedCount` in the stale scheduler decision race check. `modifiedCount` can return `0` when the document matches but no fields actually changed, causing false-negative claim rejections under rapid successive evaluations.
-- **Conditional Atomic Schedule Initialization**: First `nextFireTime` computation now uses a conditional update matching `nextFireTime == null`, `cronExpression`, and `timezone`. This prevents concurrent scheduler instances from racing on initialization and guards against stale writes when users modify schedules between the scheduler's read and write.
-- **Conditional Misfire Skip Advancement**: The `DO_NOT_CATCH_UP` misfire skip now uses a conditional update matching the current `nextFireTime` and schedule parameters before advancing. If the user changed the schedule during backend downtime, the stale advancement is safely rejected.
-- **Schedule-Aware Recovery Fire Time Advancement**: Recovery of `FAILED_RETRYABLE` occurrences now verifies that the occurrence's `scheduledFireTime` is still relevant to the current schedule before advancing fire times, preventing stale schedule overwrites after cron changes.
+This phase adds native AI workflow execution nodes to Adonis, enabling intelligent text generation and structured data extraction powered by OpenAI and Google Gemini:
+- **Provider-Neutral SPI**: Pluggable provider abstraction (`AIProvider`, `AIRequest`, `AIResponse`, `AIUsage`, `AIProviderService`) supporting OpenAI and Google Gemini with standard Java 21 `HttpClient` (zero SDK bloat).
+- **Two Native Node Types**: `ai_text_generation` (text completion with model, system/user prompt, temperature, maxTokens) and `ai_structured_output` (strict JSON schema conformity validation).
+- **Prompt Variable Interpolation**: Dynamic prompt templating resolving expressions like `{{nodeId.output.property}}`, `{{nodeId.output}}`, and `{{input.key}}` with automatic credential sanitization.
+- **Strict JSON Schema Validation**: Pre-flight validation of schema definitions and runtime validation of model responses, automatically stripping markdown fences and failing the node with diagnostic field errors if malformed.
+- **Failures & Resilient Retries**: Integrated with existing `RetryPolicy` and `FailureClassifier` (HTTP 429 rate limits and 5xx are retryable; 4xx and schema failures fail fast).
+- **Zero-Trust Credential Security**: Server-side API keys (`OPENAI_API_KEY`, `GEMINI_API_KEY`); graph-level rejection of client-provided API keys; Gemini `x-goog-api-key` header authentication; deep redaction across execution history.
+- **Visual Node Builder**: React Flow custom nodes (`AITextGenerationNode`, `AIStructuredOutputNode`), palette drag-and-drop, and configuration drawer with provider/model presets, variable cheat sheet, and schema editor.
 
 
 ---
@@ -227,9 +230,150 @@ The `HttpRequestNode` enables outbound HTTP calls to user-specified destinations
 
 ---
 
+## AI Workflow Nodes (Phase 9 Operational)
+
+Adonis provides native AI execution nodes that execute directly within the core `WorkflowExecutionEngine` without extra runtime dependencies or vendor SDKs.
+
+### Environment Configuration
+
+LLM API keys and HTTP client timeouts are configured exclusively on the server side via environment variables:
+
+| Variable | Description | Default |
+|---|---|---|
+| `OPENAI_API_KEY` | OpenAI API secret key (`sk-...`) | `""` (Disabled if absent) |
+| `GEMINI_API_KEY` | Google Gemini API key (`AIzaSy...`) | `""` (Disabled if absent) |
+| `ADONIS_AI_TIMEOUT_SECONDS` | HTTP connect & read timeout for AI provider calls | `60` |
+
+> **Zero-Trust Credential Security**:
+> API keys must **never** be supplied in workflow JSON definitions. The engine actively rejects any node configuration containing `apiKey`, `api_key`, `secretKey`, or `token` with a `WorkflowValidationException`.
+> For Google Gemini, the API key is passed strictly via the `x-goog-api-key` HTTP request header (never via URL query parameter) to eliminate URI-based credential logging.
+
+### Supported Node Types
+
+#### 1. AI Text Generation (`ai_text_generation`)
+Generates unstructured text completions using OpenAI or Google Gemini:
+- **`provider`**: `"openai"` or `"gemini"`
+- **`model`**: e.g., `"gpt-4o"`, `"gpt-4o-mini"`, `"gemini-1.5-flash"`, `"gemini-1.5-pro"`
+- **`systemPrompt`**: Optional system instruction guiding model tone and persona
+- **`userPrompt`**: Main prompt text supporting runtime variable interpolation
+- **`temperature`**: Sampling temperature (`0.0` to `2.0`, default `0.7`)
+- **`maxTokens`**: Maximum completion tokens (optional)
+
+**Node Output Schema**:
+```json
+{
+  "content": "The generated text response from the model.",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "usage": {
+    "promptTokens": 18,
+    "completionTokens": 10,
+    "totalTokens": 28
+  }
+}
+```
+
+#### 2. AI Structured Output (`ai_structured_output`)
+Generates strictly conforming JSON objects validated against a provided JSON Schema:
+- **`provider`**: `"openai"` or `"gemini"`
+- **`model`**: Target model identifier
+- **`systemPrompt`**: Optional system prompt
+- **`userPrompt`**: Main prompt text supporting variable interpolation
+- **`jsonSchema`**: JSON Schema object defining required fields, property types (`string`, `number`, `integer`, `boolean`, `array`, `object`), and enums
+
+**Node Output Schema**:
+```json
+{
+  "content": "{\"sentiment\": \"positive\", \"score\": 0.95}",
+  "structured": {
+    "sentiment": "positive",
+    "score": 0.95
+  },
+  "provider": "gemini",
+  "model": "gemini-1.5-flash",
+  "usage": {
+    "promptTokens": 42,
+    "completionTokens": 14,
+    "totalTokens": 56
+  }
+}
+```
+
+### Prompt Variable Interpolation
+
+Prompts support runtime interpolation using mustache-style delimiters:
+- **`{{nodeId.output.property}}`**: Resolves a nested field from an upstream node's output (e.g. `{{http_1.output.body.data[0].title}}`).
+- **`{{nodeId.output}}`**: Resolves the entire output of an upstream node as text or serialized JSON.
+- **`{{input.key}}`** or **`{{trigger.output.key}}`**: Resolves properties from the initial trigger payload.
+
+Unresolved variables safely evaluate to empty strings. Dynamic variables are sanitized via `SecretRedactor` before being sent to LLM endpoints.
+
+### Example AI Workflow JSON
+
+Below is a complete, executable workflow demonstrating Webhook ingestion → AI Structured Extraction → AI Text Generation:
+
+```json
+{
+  "name": "Customer Feedback Triage",
+  "description": "Extracts sentiment and generates a support response draft",
+  "status": "ACTIVE",
+  "triggerType": "WEBHOOK",
+  "triggerConfig": {
+    "webhookPath": "feedback-triage-12345"
+  },
+  "nodes": [
+    {
+      "id": "trigger_1",
+      "type": "trigger",
+      "name": "Webhook Ingestion",
+      "config": {}
+    },
+    {
+      "id": "ai_extract",
+      "type": "ai_structured_output",
+      "name": "Analyze Feedback Sentiment",
+      "config": {
+        "provider": "gemini",
+        "model": "gemini-1.5-flash",
+        "systemPrompt": "Extract sentiment and categorization from feedback.",
+        "userPrompt": "Analyze the customer message: {{trigger_1.output.body.message}}",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "sentiment": { "type": "string", "enum": ["POSITIVE", "NEUTRAL", "NEGATIVE"] },
+            "priority": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"] },
+            "summary": { "type": "string" }
+          },
+          "required": ["sentiment", "priority", "summary"]
+        }
+      }
+    },
+    {
+      "id": "ai_reply",
+      "type": "ai_text_generation",
+      "name": "Draft Customer Reply",
+      "config": {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "systemPrompt": "You are a courteous support representative.",
+        "userPrompt": "Draft a personalized response acknowledging their feedback. Sentiment: {{ai_extract.output.structured.sentiment}}. Summary: {{ai_extract.output.structured.summary}}.",
+        "temperature": 0.7,
+        "maxTokens": 250
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger_1", "target": "ai_extract" },
+    { "id": "e2", "source": "ai_extract", "target": "ai_reply" }
+  ]
+}
+```
+
+---
+
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0 through Phase 8.1 — Operational)**:
+- **Current (Phase 0 through Phase 9 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users`, `workflows`, `workflow_executions`, and `scheduled_occurrences` collections)
@@ -239,7 +383,7 @@ The `HttpRequestNode` enables outbound HTTP calls to user-specified destinations
   - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`, `/api/executions/**`)
   - Public unauthenticated capability URL endpoint (`POST /api/webhooks/{webhookPath}`) with 256-bit entropy, strict validation, trigger-type enforcement, and secret verification
   - Workflow CRUD REST API (`POST`, `GET`, `GET {id}`, `PUT {id}`, `DELETE {id}`) with ownership-level query isolation and cascade deletion of scheduled occurrences
-  - React Flow visual workflow builder (`@xyflow/react`) with custom nodes (Trigger, HTTP Request, Generic), handles, zoom/pan/minimap, node palette, configuration drawer, and dirty state management
+  - React Flow visual workflow builder (`@xyflow/react`) with custom nodes (Trigger, HTTP Request, Generic, AI Text Generation, AI Structured Output), handles, zoom/pan/minimap, node palette, configuration drawer, and dirty state management
   - Trigger configuration UI with Manual, Schedule (cron presets + timezone dropdown), and Webhook (URL copy, masked secret, secret regeneration, async notice, and lifecycle cleanup on transition)
   - Asynchronous, non-blocking workflow execution (`POST /api/workflows/{id}/execute` and `POST /api/webhooks/{webhookPath}` return `202 Accepted` immediately with status `QUEUED`)
   - Fail-safe queue submission: transitions execution record to `FAILED` with sanitized messaging if Redis enqueuing fails, with idempotent retry support on webhook re-delivery
@@ -255,13 +399,15 @@ The `HttpRequestNode` enables outbound HTTP calls to user-specified destinations
   - Centralized cron scheduler (`AdonisScheduler`) with pure `DO_NOT_CATCH_UP` misfire policy, durable occurrence reservation, race-free atomic MongoDB field updates, and fault isolation
   - Webhook controller (`WebhookController`) with constant-time secret check, bounded body limit, redaction, 256-char max `Idempotency-Key`, and retryable queue failure handling
   - Workflow execution engine: deterministic topological sort, fail-fast behavior, data flow propagation, and structured node execution outcomes
-  - Node executors: `TriggerNodeExecutor` (supports Manual, Schedule, and Webhook trigger contexts), `HttpRequestNodeExecutor` (real HTTP requests via standard Java `HttpClient` for GET/POST/PUT/DELETE/PATCH), and `GenericNodeExecutor` (safe pass-through)
+  - Node executors: `TriggerNodeExecutor`, `HttpRequestNodeExecutor`, `GenericNodeExecutor`, `AITextGenerationNodeExecutor`, `AIStructuredOutputNodeExecutor`
+  - AI Provider Layer: Provider-neutral SPI (`AIProvider`, `AIRequest`, `AIResponse`, `AIUsage`), `OpenAIProvider`, `GeminiProvider` using native Java `HttpClient`, and `PromptInterpolator`
+  - JSON Schema Validator: Lightweight Jackson-based schema validator with markdown code-fence stripping for structured outputs
   - Persistent workflow execution records (`workflow_executions`) tracking status (`QUEUED` → `RUNNING` → `SUCCESS`/`FAILED`), timestamps, duration, trigger type, and granular node executions
   - Fail-fast skipped node persistence (downstream nodes marked `SKIPPED`)
   - Node-level retry policies (`RetryConfig`: `enabled`, `maxRetries`, `initialBackoffMs`, `backoffMultiplier`, `maxBackoffMs`) with safe defaults and exponential backoff
-  - Intelligent failure classification (`FailureClassifier`) distinguishing retryable errors (408, 429, 500, 502, 503, 504, connection timeouts, refused connections) from non-retryable errors (400, 401, 403, 404, invalid URLs)
+  - Intelligent failure classification (`FailureClassifier`) distinguishing retryable errors (408, 429, 500, 502, 503, 504, `RESOURCE_EXHAUSTED`, connection timeouts, refused connections) from non-retryable errors (400, 401, 403, 404, schema validation errors, missing API keys)
   - Granular attempt tracking (`NodeExecutionAttempt`: attemptNumber, status, timestamps, duration, input, output, error) with retry count recorded on `NodeExecution`
-  - Deep secret redaction (`SecretRedactor`) for sensitive headers, API keys, bearer tokens, and credentials across all attempts, results, and persistence
+  - Deep secret redaction (`SecretRedactor`) for sensitive headers, API keys (`sk-...`, `AIzaSy...`), bearer tokens, and credentials across all attempts, results, and persistence
   - Pluggable backoff delay strategy (`RetryDelayStrategy`: production thread sleep, non-blocking test stub)
   - Paginated execution history endpoints (`GET /api/workflows/{id}/executions`, `GET /api/executions`) and detailed execution inspector (`GET /api/executions/{id}`)
   - Execution history panel with trigger badges (`MANUAL`, `SCHEDULE`, `WEBHOOK`), pagination, and enhanced execution results modal inspecting node inputs, outputs, errors, skipped steps, and attempt histories
@@ -269,8 +415,7 @@ The `HttpRequestNode` enables outbound HTTP calls to user-specified destinations
   - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, `mongodb`, and `redis`
   - Automated GitHub Actions CI pipeline (backend test & frontend build)
 
-- **Planned Functionality (Phases 9–12)**:
-  - AI nodes powered by Gemini/OpenAI (Planned for Phase 9)
+- **Planned Functionality (Phases 10–12)**:
   - Automated testing & Testcontainers (Planned for Phase 10)
   - Production Docker & deployment (Planned for Phase 11)
   - CI/CD & production hardening (Planned for Phase 12)
@@ -293,8 +438,9 @@ The `HttpRequestNode` enables outbound HTTP calls to user-specified destinations
 - [x] **Phase 8.1 — Trigger Reliability & Security Hardening**
 - [x] **Phase 8.1.1 — Scheduler Concurrency & Queue Failure Hardening**
 - [x] **Phase 8.1.2 — Scheduler State Consistency Hardening**
-- [ ] **Phase 9 — AI Nodes**
+- [x] **Phase 9 — AI Nodes**
 - [ ] **Phase 10 — Automated Testing + Testcontainers**
 - [ ] **Phase 11 — Docker + Deployment**
 - [ ] **Phase 12 — GitHub Actions CI/CD + Production Hardening**
+
 

@@ -134,9 +134,15 @@ public class FailureClassifier {
                 || lower.contains("malformed url")
                 || lower.contains("invalid configuration")
                 || lower.contains("validation error")
+                || lower.contains("schema validation")
+                || lower.contains("invalid json")
+                || lower.contains("malformed ai output")
                 || lower.contains("unsupported node")
+                || lower.contains("unsupported ai provider")
                 || lower.contains("unsupported http method")
                 || lower.contains("missing required")
+                || lower.contains("api key is not configured")
+                || lower.contains("invalid model")
                 || lower.contains("unauthorized")
                 || lower.contains("forbidden")
                 || lower.contains("not found")
@@ -168,6 +174,11 @@ public class FailureClassifier {
                 || lower.contains("gateway timeout")
                 || lower.contains("bad gateway")
                 || lower.contains("http connection failed")
+                || lower.contains("connection failure")
+                || lower.contains("rate limit")
+                || lower.contains("too many requests")
+                || lower.contains("quota exceeded")
+                || lower.contains("resource_exhausted")
                 || lower.contains("connectexception");
     }
 

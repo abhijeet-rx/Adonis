@@ -9,4 +9,8 @@ public interface NodeExecutor {
     boolean supports(String nodeType);
 
     NodeExecutionResult execute(WorkflowNode node, Map<String, Object> input, ExecutionContext context);
+
+    default void validate(WorkflowNode node) {
+        // Default no-op for nodes without additional validation rules
+    }
 }

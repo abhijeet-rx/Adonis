@@ -14,7 +14,10 @@ import {
   Clock,
   RefreshCw,
   ExternalLink,
-  Shield
+  Shield,
+  Sparkles,
+  Brain,
+  Info
 } from 'lucide-react';
 import { NODE_TYPES, type CustomNodeData } from './workflowAdapter';
 import {
@@ -84,6 +87,38 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
   );
   const [url, setUrl] = useState<string>(
     typeof nodeData.url === 'string' ? nodeData.url : 'https://api.example.com'
+  );
+
+  // AI Node Configuration State (Phase 9)
+  const [provider, setProvider] = useState<'openai' | 'gemini'>(
+    (nodeData.provider as 'openai' | 'gemini') || 'openai'
+  );
+  const [model, setModel] = useState<string>(
+    typeof nodeData.model === 'string' && nodeData.model
+      ? nodeData.model
+      : (nodeData.provider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini')
+  );
+  const [systemPrompt, setSystemPrompt] = useState<string>(
+    typeof nodeData.systemPrompt === 'string' ? nodeData.systemPrompt : ''
+  );
+  const [userPrompt, setUserPrompt] = useState<string>(
+    typeof nodeData.userPrompt === 'string'
+      ? nodeData.userPrompt
+      : typeof nodeData.prompt === 'string'
+      ? nodeData.prompt
+      : ''
+  );
+  const [temperature, setTemperature] = useState<number>(
+    typeof nodeData.temperature === 'number' ? nodeData.temperature : 0.7
+  );
+  const [maxTokens, setMaxTokens] = useState<number>(
+    typeof nodeData.maxTokens === 'number' ? nodeData.maxTokens : 1000
+  );
+  const defaultSchema = `{\n  "type": "object",\n  "required": ["name", "summary"],\n  "properties": {\n    "name": { "type": "string" },\n    "summary": { "type": "string" }\n  }\n}`;
+  const [jsonSchema, setJsonSchema] = useState<string>(
+    typeof nodeData.jsonSchema === 'string'
+      ? nodeData.jsonSchema
+      : defaultSchema
   );
 
   // Trigger Configuration State
@@ -206,16 +241,35 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
     };
 
     const isTrigger = selectedNode.type === NODE_TYPES.TRIGGER;
+    const isAIText = selectedNode.type === NODE_TYPES.AI_TEXT_GENERATION;
+    const isAIStruct = selectedNode.type === NODE_TYPES.AI_STRUCTURED_OUTPUT;
+
+    const defaultLabel = isTrigger
+      ? `${triggerType} Trigger`
+      : isAIText
+      ? 'AI Text Generation'
+      : isAIStruct
+      ? 'AI Structured Output'
+      : 'Untitled Node';
 
     const updatedData: CustomNodeData = {
       ...selectedNode.data,
-      label: label.trim() || (isTrigger ? `${triggerType} Trigger` : 'Untitled Node'),
+      label: label.trim() || defaultLabel,
       description: description.trim(),
       method,
       url: url.trim(),
       triggerType: isTrigger ? triggerType : undefined,
       cronExpression: isTrigger && triggerType === 'SCHEDULE' ? cronExpression : undefined,
       timezone: isTrigger && triggerType === 'SCHEDULE' ? timezone : undefined,
+      // Phase 9 AI Fields
+      provider: (isAIText || isAIStruct) ? provider : undefined,
+      model: (isAIText || isAIStruct) ? model.trim() : undefined,
+      systemPrompt: (isAIText || isAIStruct) ? systemPrompt.trim() : undefined,
+      userPrompt: (isAIText || isAIStruct) ? userPrompt.trim() : undefined,
+      prompt: (isAIText || isAIStruct) ? userPrompt.trim() : undefined,
+      temperature: (isAIText || isAIStruct) ? Number(temperature) : undefined,
+      maxTokens: (isAIText || isAIStruct) ? Number(maxTokens) : undefined,
+      jsonSchema: isAIStruct ? jsonSchema.trim() : undefined,
       retry: cleanRetry,
       retryConfig: cleanRetry
     };
@@ -239,6 +293,10 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
         return <Zap className="w-4 h-4 text-amber-400" />;
       case NODE_TYPES.HTTP_REQUEST:
         return <Globe className="w-4 h-4 text-emerald-400" />;
+      case NODE_TYPES.AI_TEXT_GENERATION:
+        return <Sparkles className="w-4 h-4 text-purple-400" />;
+      case NODE_TYPES.AI_STRUCTURED_OUTPUT:
+        return <Brain className="w-4 h-4 text-fuchsia-400" />;
       default:
         return <Box className="w-4 h-4 text-indigo-400" />;
     }
@@ -250,6 +308,10 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
         return 'Trigger Configuration';
       case NODE_TYPES.HTTP_REQUEST:
         return 'HTTP Request Configuration';
+      case NODE_TYPES.AI_TEXT_GENERATION:
+        return 'AI Text Generation Configuration';
+      case NODE_TYPES.AI_STRUCTURED_OUTPUT:
+        return 'AI Structured Output Configuration';
       default:
         return 'Custom Node Configuration';
     }
@@ -560,6 +622,327 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({
               />
             </div>
           </>
+        )}
+
+        {/* AI Text Generation Configuration */}
+        {selectedNode.type === NODE_TYPES.AI_TEXT_GENERATION && (
+          <div className="space-y-4 pt-1">
+            {/* Provider Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-200 block">AI Provider</label>
+              <div className="grid grid-cols-2 gap-2 p-1 bg-slate-950/80 border border-slate-800 rounded-lg text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProvider('openai');
+                    if (!model || model.startsWith('gemini')) {
+                      setModel('gpt-4o-mini');
+                    }
+                  }}
+                  className={`py-2 px-3 rounded-md font-medium text-center transition flex items-center justify-center gap-1.5 ${
+                    provider === 'openai'
+                      ? 'bg-emerald-500 text-slate-950 shadow font-semibold'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>OpenAI</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProvider('gemini');
+                    if (!model || model.startsWith('gpt')) {
+                      setModel('gemini-1.5-flash');
+                    }
+                  }}
+                  className={`py-2 px-3 rounded-md font-medium text-center transition flex items-center justify-center gap-1.5 ${
+                    provider === 'gemini'
+                      ? 'bg-blue-500 text-slate-950 shadow font-semibold'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Google Gemini</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Model Name & Presets */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-300 block">Model</label>
+                <div className="flex items-center gap-1">
+                  {(provider === 'openai' ? ['gpt-4o-mini', 'gpt-4o'] : ['gemini-1.5-flash', 'gemini-1.5-pro']).map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setModel(preset)}
+                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition ${
+                        model === preset
+                          ? 'bg-purple-900/50 text-purple-300 border-purple-600'
+                          : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={provider === 'openai' ? 'gpt-4o-mini' : 'gemini-1.5-flash'}
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 font-mono transition"
+              />
+            </div>
+
+            {/* System Prompt */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-300 block">System Prompt (Optional)</label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder="You are an expert assistant specialized in..."
+                rows={2}
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 transition leading-relaxed resize-none"
+              />
+            </div>
+
+            {/* User Prompt with interpolation notice */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-300 block">User Prompt</label>
+                <span className="text-[10px] text-purple-400 font-mono">Supports {"{{variables}}"}</span>
+              </div>
+              <textarea
+                value={userPrompt}
+                onChange={(e) => setUserPrompt(e.target.value)}
+                placeholder="Write a summary for: {{previousNode.output.text}}"
+                rows={4}
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 transition leading-relaxed font-mono resize-y"
+              />
+            </div>
+
+            {/* Temperature & Max Output Tokens */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                  <span>Temperature</span>
+                  <span className="font-mono text-purple-300">{temperature}</span>
+                </div>
+                <input
+                  type="number"
+                  min={0.0}
+                  max={2.0}
+                  step={0.1}
+                  value={temperature}
+                  onChange={(e) => setTemperature(parseFloat(e.target.value) || 0.7)}
+                  className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                  <span>Max Tokens</span>
+                  <span className="font-mono text-purple-300">{maxTokens}</span>
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  max={8192}
+                  step={50}
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(parseInt(e.target.value) || 1000)}
+                  className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+            </div>
+
+            {/* Variable Interpolation Helper Banner */}
+            <div className="p-3 bg-purple-950/30 border border-purple-800/40 rounded-lg text-[11px] text-purple-200 space-y-1 leading-relaxed">
+              <div className="flex items-center gap-1.5 font-semibold text-purple-300">
+                <Info className="w-3.5 h-3.5" />
+                <span>Prompt Variable Interpolation</span>
+              </div>
+              <p className="text-slate-300">
+                Access upstream data: <code className="text-purple-300 font-mono">{"{{nodeId.output}}"}</code>,{' '}
+                <code className="text-purple-300 font-mono">{"{{nodeId.output.text}}"}</code>, or{' '}
+                <code className="text-purple-300 font-mono">{"{{input.propertyName}}"}</code>.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* AI Structured Output Configuration */}
+        {selectedNode.type === NODE_TYPES.AI_STRUCTURED_OUTPUT && (
+          <div className="space-y-4 pt-1">
+            {/* Provider Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-200 block">AI Provider</label>
+              <div className="grid grid-cols-2 gap-2 p-1 bg-slate-950/80 border border-slate-800 rounded-lg text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProvider('openai');
+                    if (!model || model.startsWith('gemini')) {
+                      setModel('gpt-4o-mini');
+                    }
+                  }}
+                  className={`py-2 px-3 rounded-md font-medium text-center transition flex items-center justify-center gap-1.5 ${
+                    provider === 'openai'
+                      ? 'bg-emerald-500 text-slate-950 shadow font-semibold'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>OpenAI</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProvider('gemini');
+                    if (!model || model.startsWith('gpt')) {
+                      setModel('gemini-1.5-flash');
+                    }
+                  }}
+                  className={`py-2 px-3 rounded-md font-medium text-center transition flex items-center justify-center gap-1.5 ${
+                    provider === 'gemini'
+                      ? 'bg-blue-500 text-slate-950 shadow font-semibold'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Google Gemini</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Model Name & Presets */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-300 block">Model</label>
+                <div className="flex items-center gap-1">
+                  {(provider === 'openai' ? ['gpt-4o-mini', 'gpt-4o'] : ['gemini-1.5-flash', 'gemini-1.5-pro']).map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setModel(preset)}
+                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition ${
+                        model === preset
+                          ? 'bg-fuchsia-900/50 text-fuchsia-300 border-fuchsia-600'
+                          : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={provider === 'openai' ? 'gpt-4o-mini' : 'gemini-1.5-flash'}
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-fuchsia-500 font-mono transition"
+              />
+            </div>
+
+            {/* System Prompt */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-300 block">System Prompt (Optional)</label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder="You extract structured entities from raw input..."
+                rows={2}
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-fuchsia-500 transition leading-relaxed resize-none"
+              />
+            </div>
+
+            {/* User Prompt */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-300 block">Extraction Prompt</label>
+                <span className="text-[10px] text-fuchsia-400 font-mono">Supports {"{{variables}}"}</span>
+              </div>
+              <textarea
+                value={userPrompt}
+                onChange={(e) => setUserPrompt(e.target.value)}
+                placeholder="Extract candidate details from: {{resumeNode.output.body}}"
+                rows={3}
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-fuchsia-500 transition leading-relaxed font-mono resize-y"
+              />
+            </div>
+
+            {/* JSON Schema */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-300 block">JSON Schema</label>
+                <button
+                  type="button"
+                  onClick={() => setJsonSchema(defaultSchema)}
+                  className="text-[10px] text-fuchsia-400 hover:text-fuchsia-300 transition"
+                >
+                  Reset Template
+                </button>
+              </div>
+              <textarea
+                value={jsonSchema}
+                onChange={(e) => setJsonSchema(e.target.value)}
+                placeholder="JSON Schema definition"
+                rows={6}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-[11px] text-emerald-300 placeholder-slate-500 focus:outline-none focus:border-fuchsia-500 font-mono transition leading-relaxed resize-y"
+              />
+            </div>
+
+            {/* Temperature & Max Output Tokens */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                  <span>Temperature</span>
+                  <span className="font-mono text-fuchsia-300">{temperature}</span>
+                </div>
+                <input
+                  type="number"
+                  min={0.0}
+                  max={2.0}
+                  step={0.1}
+                  value={temperature}
+                  onChange={(e) => setTemperature(parseFloat(e.target.value) || 0.2)}
+                  className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-fuchsia-500 font-mono"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                  <span>Max Tokens</span>
+                  <span className="font-mono text-fuchsia-300">{maxTokens}</span>
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  max={8192}
+                  step={50}
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(parseInt(e.target.value) || 1000)}
+                  className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-fuchsia-500 font-mono"
+                />
+              </div>
+            </div>
+
+            {/* Variable Interpolation Helper Banner */}
+            <div className="p-3 bg-fuchsia-950/30 border border-fuchsia-800/40 rounded-lg text-[11px] text-fuchsia-200 space-y-1 leading-relaxed">
+              <div className="flex items-center gap-1.5 font-semibold text-fuchsia-300">
+                <Info className="w-3.5 h-3.5" />
+                <span>Structured Output Guarantee</span>
+              </div>
+              <p className="text-slate-300">
+                Output is strictly parsed and validated against the JSON Schema. If the model response is malformed or invalid, execution automatically fails.
+              </p>
+            </div>
+          </div>
         )}
 
         {/* Retry Configuration (for executable nodes) */}
