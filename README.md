@@ -8,14 +8,13 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 8.1.1 — Scheduler Concurrency & Queue Failure Hardening** *(Completed)*
+**Phase 8.1.2 — Scheduler State Consistency Hardening** *(Completed)*
 
-This phase resolves critical concurrency and infrastructure resilience edge cases in the scheduling and trigger pipeline:
-- **Stale Scheduler Decision Race Prevention**: The scheduler atomically verifies that the evaluated workflow schedule state (`status = ACTIVE`, `triggerType = SCHEDULE`, `cronExpression`, `timezone`, and `nextFireTime == nextDue`) remains unmodified in MongoDB before claiming an occurrence. If a user modifies the schedule or deactivates the workflow between evaluation and claim (`modifiedCount == 0`), the iteration is immediately abandoned without creating stale executions, occurrences, or fire-time updates.
-- **Scheduled Occurrence Reliability & State Lifecycle**: Each scheduled fire time is uniquely identified by `(workflowId, scheduledFireTime)` backed by a MongoDB compound unique index. Occurrences transition through an explicit lifecycle: `CLAIMED` → `ENQUEUED` (or `FAILED_RETRYABLE`). At most one logical `WorkflowExecution` is ever created per occurrence.
-- **Redis Queue Failure Resilience**: Temporary Redis outages do NOT permanently consume or lose scheduled occurrences. If Redis queue submission fails due to a transient infrastructure error, the occurrence is marked `FAILED_RETRYABLE` holding its `executionId`, and the workflow's `nextFireTime` is intentionally NOT advanced. Subsequent scheduler iterations detect and recover the occurrence, retrying queue submission for the existing execution once Redis becomes available without spawning duplicate executions.
-- **Atomic Webhook Idempotency Retry**: The retry path for previously failed queue submissions performs an atomic MongoDB conditional state transition (`FAILED` → `QUEUED` where `startedAt == null`). Concurrent client retries for the same idempotency key are safely deduplicated, ensuring only one request enqueues to Redis while concurrent requests return the existing execution state.
-- **Precise Delivery Semantics**: Adonis guarantees **at-least-once delivery** across Redis Streams and the trigger pipeline, paired with **idempotent execution claiming** (`findAndModify: QUEUED → RUNNING`) and renewable worker ownership leases. The platform explicitly does NOT claim exactly-once execution or exactly-once external side effects.
+This phase fixes four scheduler state consistency issues discovered during a final audit of the Phase 8.1.1 implementation:
+- **`matchedCount` for Conditional Verification**: Changed `modifiedCount` to `matchedCount` in the stale scheduler decision race check. `modifiedCount` can return `0` when the document matches but no fields actually changed, causing false-negative claim rejections under rapid successive evaluations.
+- **Conditional Atomic Schedule Initialization**: First `nextFireTime` computation now uses a conditional update matching `nextFireTime == null`, `cronExpression`, and `timezone`. This prevents concurrent scheduler instances from racing on initialization and guards against stale writes when users modify schedules between the scheduler's read and write.
+- **Conditional Misfire Skip Advancement**: The `DO_NOT_CATCH_UP` misfire skip now uses a conditional update matching the current `nextFireTime` and schedule parameters before advancing. If the user changed the schedule during backend downtime, the stale advancement is safely rejected.
+- **Schedule-Aware Recovery Fire Time Advancement**: Recovery of `FAILED_RETRYABLE` occurrences now verifies that the occurrence's `scheduledFireTime` is still relevant to the current schedule before advancing fire times, preventing stale schedule overwrites after cron changes.
 
 
 ---
@@ -293,6 +292,7 @@ The `HttpRequestNode` enables outbound HTTP calls to user-specified destinations
 - [x] **Phase 8 — Scheduling + Webhooks**
 - [x] **Phase 8.1 — Trigger Reliability & Security Hardening**
 - [x] **Phase 8.1.1 — Scheduler Concurrency & Queue Failure Hardening**
+- [x] **Phase 8.1.2 — Scheduler State Consistency Hardening**
 - [ ] **Phase 9 — AI Nodes**
 - [ ] **Phase 10 — Automated Testing + Testcontainers**
 - [ ] **Phase 11 — Docker + Deployment**

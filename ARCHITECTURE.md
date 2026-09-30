@@ -533,7 +533,7 @@ Phase 8 and 8.1 introduce two production trigger producers (the centralized Cron
            .and("triggerConfig.nextFireTime").is(nextDue)
    );
    ```
-   If a user modified the cron expression, changed the timezone, altered the trigger type, or deactivated the workflow between the scheduler's read and claim steps, `claimCheck.getModifiedCount()` returns `0`. The scheduler immediately abandons the iteration without creating stale executions, claiming occurrences, or modifying fire times, leaving the next scheduler cycle to process the updated workflow state cleanly.
+   If a user modified the cron expression, changed the timezone, altered the trigger type, or deactivated the workflow between the scheduler's read and claim steps, `claimCheck.getMatchedCount()` returns `0`. The scheduler immediately abandons the iteration without creating stale executions, claiming occurrences, or modifying fire times, leaving the next scheduler cycle to process the updated workflow state cleanly.
 
 2. **Scheduled Occurrence Reliability & Explicit Lifecycle**:
    Every scheduled occurrence is uniquely identified by `(workflowId, scheduledFireTime)` enforced by a MongoDB compound unique index. `ScheduledOccurrence` tracks an explicit lifecycle:
@@ -563,4 +563,19 @@ Phase 8 and 8.1 introduce two production trigger producers (the centralized Cron
 5. **Delivery & Execution Semantics**:
    Adonis enforces **at-least-once delivery** across Redis Streams and trigger producers, combined with **idempotent execution claiming** (`findAndModify: QUEUED → RUNNING`) and renewable worker ownership leases (`leaseUntil`, `lastHeartbeatAt`). Under transient network retries or worker crash recovery, jobs may be re-delivered, but the atomic state transitions guarantee that only one worker executes the job. Adonis explicitly makes no claim of exactly-once external side effects.
 
+### 10.5 Phase 8.1.2 — Scheduler State Consistency Hardening
+
+1. **`matchedCount` for Conditional Verification (Fix #1)**:
+   Changed `claimCheck.getModifiedCount() == 0` to `claimCheck.getMatchedCount() == 0` in the stale scheduler decision race check. `modifiedCount` can return `0` even when the document exists with the expected state (if `$set` values match existing fields). `matchedCount` reliably confirms document existence regardless of whether the update actually changed any field values.
+
+2. **Conditional Atomic Schedule Initialization (Fix #2)**:
+   Schedule initialization (first `nextFireTime` computation when `nextFireTime == null`) now uses `conditionalInitNextFireTime(...)` with a query that matches `triggerConfig.nextFireTime: null`, `triggerConfig.cronExpression`, `triggerConfig.timezone`, `status: ACTIVE`, and `triggerType: SCHEDULE`. This prevents:
+   - Two concurrent scheduler instances from racing on initialization
+   - A scheduler from overwriting a user-modified cron expression with a stale-computed next fire time
+
+3. **Conditional Misfire Skip Advancement (Fix #3)**:
+   The `DO_NOT_CATCH_UP` misfire skip now uses `conditionalAdvanceNextFireTime(...)` which matches the current `nextFireTime` value and schedule parameters before writing. If the user changed the schedule during backend downtime, the conditional query matches 0 documents and the in-memory state is not updated, preventing stale schedule overwrites.
+
+4. **Schedule-Aware Recovery Fire Time Advancement (Fix #4)**:
+   Recovery of `FAILED_RETRYABLE` occurrences now checks whether the occurrence's `scheduledFireTime` is still relevant to the current workflow schedule before advancing fire times. If the schedule has changed (current `nextFireTime` has moved past the occurrence), the execution is still recovered (the `WorkflowExecution` document was already created), but fire times are NOT advanced. Fire time writes use `conditionalAdvanceFireTimes(...)` with a guard matching the expected `nextFireTime`.
 

@@ -492,8 +492,29 @@ This document records the architectural and technical decisions made during the 
   - Positive: Eliminates stale schedule races; guarantees scheduled occurrences survive transient Redis outages without data loss or duplication; guarantees single execution creation per occurrence; eliminates duplicate enqueuing on concurrent webhook retries; maintains strict separation between user-owned workflow canvas fields and scheduler-owned fire times.
   - Trade-off: Non-retryable application errors during execution creation are not masked as retryable queue failures; scheduler claims require an additional lightweight atomic touch query before reserving occurrences.
 
+---
 
+## ADR-025: Phase 8.1.2 — Scheduler State Consistency Hardening
 
-
+* **Status**: Accepted
+* **Date**: 2026-09-30
+* **Context**:
+  A final audit of the Phase 8.1.1 scheduler hardening identified four state consistency issues that could cause silent data corruption under concurrent scheduler instances or user-concurrent schedule modifications:
+  1. *`modifiedCount` vs `matchedCount` in Conditional Verification*: The scheduler's stale-snapshot protection used `modifiedCount == 0` to detect whether the schedule was still current. However, `modifiedCount` returns 0 when the update query matches a document but the `$set` values are identical to the existing document (e.g., `updatedAt` happens to be the same). In such cases, `matchedCount` correctly returns 1, confirming the document with the expected schedule state exists. Using `modifiedCount` caused false-negative claim rejections under rapid successive evaluations.
+  2. *Unconditional Schedule Initialization*: When `nextFireTime` was null (first initialization), the scheduler computed the next occurrence and wrote it to MongoDB unconditionally. If a user changed the cron expression or timezone between the scheduler's read and the initialization write, the stale-computed `nextFireTime` would overwrite the user's fresh schedule. Similarly, two concurrent scheduler instances could race on initialization.
+  3. *Unconditional Misfire Skip Advancement*: Under the `DO_NOT_CATCH_UP` policy, the scheduler skipped missed occurrences and advanced `nextFireTime`. This write was unconditional. If the user modified the schedule during backend downtime, the post-restart misfire skip could overwrite the user's new schedule with a stale-computed advancement.
+  4. *Unchecked Recovery Fire Time Advancement*: When recovering `FAILED_RETRYABLE` occurrences from a previous Redis outage, the scheduler advanced `nextFireTime` unconditionally after successful recovery. If the schedule had changed since the occurrence was originally created, this advancement could overwrite the user's current schedule state with fire times computed from an obsolete cron expression.
+* **Decision**:
+  - **`matchedCount` for Conditional Existence Checks (Fix #1)**:
+    Changed `claimCheck.getModifiedCount() == 0` to `claimCheck.getMatchedCount() == 0` and inverted the null-check polarity to `claimCheck == null || matchedCount == 0`. This ensures the scheduler correctly detects document existence regardless of whether the `updatedAt` field actually changed.
+  - **Conditional Atomic Schedule Initialization (Fix #2)**:
+    Replaced the unconditional `updateNextFireTime(...)` during first initialization with `conditionalInitNextFireTime(...)`, which includes `triggerConfig.nextFireTime: null`, `triggerConfig.cronExpression: expectedCron`, `triggerConfig.timezone: expectedTimezone`, `status: ACTIVE`, and `triggerType: SCHEDULE` in the query criteria. The in-memory `config.setNextFireTime(...)` is only applied if `matchedCount > 0`, preventing stale initialization.
+  - **Conditional Misfire Skip Advancement (Fix #3)**:
+    Replaced the unconditional `updateNextFireTime(...)` during DO_NOT_CATCH_UP skip with `conditionalAdvanceNextFireTime(...)`, which matches `triggerConfig.nextFireTime: expectedStaleValue` along with `cronExpression` and `timezone` criteria. The in-memory config update is only applied if `matchedCount > 0`, ensuring stale misfire skips never overwrite user-modified schedules.
+  - **Schedule-Aware Recovery Fire Time Advancement (Fix #4)**:
+    Modified `recoverAndEnqueueOccurrence(...)` and `recoverOrphanFailedOccurrences(...)` to check whether the occurrence's `scheduledFireTime` is still relevant to the current schedule before advancing fire times. If `nextFireTime` has already advanced past the occurrence, the execution is still recovered (since the `WorkflowExecution` was already created), but fire times are NOT advanced. Fire time writes use `conditionalAdvanceFireTimes(...)` with a `triggerConfig.nextFireTime: expectedValue` guard.
+* **Consequences**:
+  - Positive: Eliminates all identified stale-snapshot write paths in the scheduler; conditional updates are idempotent and safe under concurrent scheduler instances; user schedule modifications are never overwritten by stale scheduler computations; existing execution recovery continues to work for orphaned `FAILED_RETRYABLE` occurrences even after schedule changes.
+  - Trade-off: When a conditional update fails (because the schedule changed concurrently), the scheduler silently skips the operation and logs the decision. The next scheduler tick will pick up the fresh state from MongoDB and proceed correctly.
 
 

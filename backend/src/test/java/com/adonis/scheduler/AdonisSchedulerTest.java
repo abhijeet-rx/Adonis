@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+import com.mongodb.client.result.UpdateResult;
+
 @ExtendWith(MockitoExtension.class)
 class AdonisSchedulerTest {
 
@@ -76,6 +78,11 @@ class AdonisSchedulerTest {
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
 
         Instant now = Instant.parse("2026-10-01T10:01:00Z");
+
+        // Phase 8.1.2: conditionalInitNextFireTime requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         boolean result = scheduler.processWorkflowSchedule(workflow, now);
 
         assertFalse(result);
@@ -113,6 +120,10 @@ class AdonisSchedulerTest {
 
         Instant now = Instant.parse("2026-10-01T10:05:02Z");
 
+        // Phase 8.1.2: claim check requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
                 .thenReturn(ExecuteWorkflowResponse.queued("exec-sched-1", "wf-1"));
 
@@ -143,6 +154,10 @@ class AdonisSchedulerTest {
 
         Instant now = Instant.parse("2026-10-01T10:05:01Z");
 
+        // Phase 8.1.2: claim check needs matchedCount > 0 to proceed past claim
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         // Another backend instance already inserted the occurrence record!
         doThrow(new DuplicateKeyException("Duplicate occurrence key")).when(mongoTemplate).insert(any(ScheduledOccurrence.class));
 
@@ -172,6 +187,10 @@ class AdonisSchedulerTest {
         Instant startupTime = Instant.parse("2026-10-01T10:06:00Z");
         scheduler.setStartupTime(startupTime);
 
+        // Phase 8.1.2: conditionalAdvanceNextFireTime requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         Instant now = Instant.parse("2026-10-01T10:06:05Z");
         boolean result = scheduler.processWorkflowSchedule(workflow, now);
 
@@ -195,6 +214,10 @@ class AdonisSchedulerTest {
         // Backend booted up 5 minutes after scheduled time
         scheduler.setStartupTime(Instant.parse("2026-10-01T10:10:00Z"));
 
+        // Phase 8.1.2: conditionalAdvanceNextFireTime requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         Instant now = Instant.parse("2026-10-01T10:10:02Z");
         boolean result = scheduler.processWorkflowSchedule(workflow, now);
 
@@ -216,6 +239,10 @@ class AdonisSchedulerTest {
         // 4 hours downtime
         scheduler.setStartupTime(Instant.parse("2026-10-01T14:00:00Z"));
 
+        // Phase 8.1.2: conditionalAdvanceNextFireTime requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         Instant now = Instant.parse("2026-10-01T14:05:00Z");
         boolean result = scheduler.processWorkflowSchedule(workflow, now);
 
@@ -236,6 +263,10 @@ class AdonisSchedulerTest {
 
         // 3 days downtime
         scheduler.setStartupTime(Instant.parse("2026-10-04T12:00:00Z"));
+
+        // Phase 8.1.2: conditionalAdvanceNextFireTime requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
 
         Instant now = Instant.parse("2026-10-04T12:01:00Z");
         boolean result = scheduler.processWorkflowSchedule(workflow, now);
@@ -259,6 +290,11 @@ class AdonisSchedulerTest {
         scheduler.setStartupTime(Instant.parse("2026-10-01T09:59:50Z"));
 
         Instant now = Instant.parse("2026-10-01T10:00:02Z");
+
+        // Phase 8.1.2: claim check requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
                 .thenReturn(ExecuteWorkflowResponse.queued("exec-1", "wf-1"));
 
@@ -280,6 +316,10 @@ class AdonisSchedulerTest {
 
         // Restarted at 10:00:05 (5s after scheduled time passed)
         scheduler.setStartupTime(Instant.parse("2026-10-01T10:00:05Z"));
+
+        // Phase 8.1.2: conditionalAdvanceNextFireTime requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
 
         Instant now = Instant.parse("2026-10-01T10:00:10Z");
         boolean result = scheduler.processWorkflowSchedule(workflow, now);
@@ -304,6 +344,11 @@ class AdonisSchedulerTest {
                 List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
 
         Instant now = Instant.parse("2026-10-01T10:05:02Z");
+
+        // Phase 8.1.2: claim check requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
                 .thenReturn(ExecuteWorkflowResponse.queued("exec-race", "wf-race-1"));
 
@@ -346,6 +391,10 @@ class AdonisSchedulerTest {
         Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
 
+        // Phase 8.1.2: conditionalInitNextFireTime requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         Instant now = Instant.parse("2026-10-01T02:00:00Z"); // 07:30 IST
         scheduler.processWorkflowSchedule(workflow, now);
 
@@ -369,6 +418,11 @@ class AdonisSchedulerTest {
                 .thenReturn(List.of(wf1, wf2));
 
         Instant now = Instant.parse("2026-10-01T10:05:01Z");
+
+        // Phase 8.1.2: claim check requires matchedCount > 0 for the good workflow
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         when(executionService.enqueueScheduledExecution(eq(wf2), anyString(), eq(scheduledTime)))
                 .thenReturn(ExecuteWorkflowResponse.queued("exec-good", "wf-good"));
 
@@ -393,14 +447,14 @@ class AdonisSchedulerTest {
 
         Instant now = Instant.parse("2026-10-01T10:05:01Z");
 
-        // Simulate user changed cron / nextFireTime in MongoDB between scheduler reading and claiming
+        // Phase 8.1.2 FIX #1: Simulate user changed cron / nextFireTime in MongoDB — matchedCount is 0
         when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
-                .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(0, 0L, null));
+                .thenReturn(UpdateResult.acknowledged(0, 0L, null));
 
         boolean processed = scheduler.processWorkflowSchedule(workflow, now);
 
-        // Claim must fail, iteration must be abandoned
-        assertFalse(processed, "Must abandon iteration when schedule condition check finds modifiedCount = 0");
+        // Claim must fail, iteration must be abandoned (matchedCount == 0)
+        assertFalse(processed, "Must abandon iteration when schedule condition check finds matchedCount = 0");
         verify(executionService, never()).enqueueScheduledExecution(any(), any(), any());
         verify(mongoTemplate, never()).insert(any(ScheduledOccurrence.class));
         verify(scheduledOccurrenceRepository, never()).save(any());
@@ -412,6 +466,10 @@ class AdonisSchedulerTest {
         WorkflowTriggerConfig updatedConfig = new WorkflowTriggerConfig("0 0 18 * * *", "UTC", null, null, false);
         Workflow reloadedWorkflow = new Workflow("wf-stale-1", "user-1", "Stale Test WF", null, WorkflowStatus.ACTIVE,
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, updatedConfig, Instant.now(), Instant.now());
+
+        // Phase 8.1.2: conditionalInitNextFireTime needs matchedCount > 0 for new schedule
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
 
         // First initialization of updated workflow computes next fire time using new cron
         scheduler.processWorkflowSchedule(reloadedWorkflow, now);
@@ -428,6 +486,10 @@ class AdonisSchedulerTest {
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
 
         Instant now = Instant.parse("2026-10-01T10:05:01Z");
+
+        // Phase 8.1.2: claim check requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
 
         // Scheduler A wins the conditional claim and occurrence insert
         when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
@@ -472,6 +534,10 @@ class AdonisSchedulerTest {
 
         Instant now = Instant.parse("2026-10-01T10:05:01Z");
 
+        // Phase 8.1.2: claim check requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         // Simulate transient Redis failure during queue submission
         when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
                 .thenThrow(new com.adonis.queue.QueueSubmissionException("exec-fail-1", "Redis connection refused: transient error"));
@@ -507,6 +573,10 @@ class AdonisSchedulerTest {
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
 
         Instant now = Instant.parse("2026-10-01T10:05:05Z");
+
+        // Phase 8.1.2: claim check requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
 
         // Occurrence already exists as FAILED_RETRYABLE from previous failed tick
         String occurrenceKey = ScheduledOccurrence.buildOccurrenceKey("wf-recover-1", scheduledTime);
@@ -550,6 +620,10 @@ class AdonisSchedulerTest {
 
         Instant now = Instant.parse("2026-10-01T10:05:10Z");
 
+        // Phase 8.1.2: claim check requires matchedCount > 0
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
         // Scheduler A failed Redis; occurrence is in DB as FAILED_RETRYABLE with executionId="exec-shared-1"
         String occurrenceKey = ScheduledOccurrence.buildOccurrenceKey("wf-dup-recover", scheduledTime);
         ScheduledOccurrence existingOccurrence = new ScheduledOccurrence(
@@ -574,6 +648,109 @@ class AdonisSchedulerTest {
         verify(executionService).retryScheduledQueueSubmission("exec-shared-1", workflow, occurrenceKey);
 
         assertEquals(ScheduledOccurrenceStatus.ENQUEUED, existingOccurrence.getStatus());
+    }
+
+    // ==========================================
+    // Phase 8.1.2 Hardening Tests — State Consistency
+    // ==========================================
+
+    @Test
+    void processWorkflowSchedule_MatchedCountVsModifiedCount_IdenticalUpdatedAtDoesNotRejectClaim() {
+        // Phase 8.1.2 FIX #1: Verify matchedCount is used instead of modifiedCount.
+        // When updatedAt is already set to the same Instant (e.g., rapid successive evaluations),
+        // modifiedCount would be 0 (no actual change) but matchedCount would be 1 (document exists).
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-match-1", "user-1", "MatchCount WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:05:01Z");
+
+        // Simulate: document matched but updatedAt was already the same value — modifiedCount=0, matchedCount=1
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 0L, null));
+
+        when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
+                .thenReturn(ExecuteWorkflowResponse.queued("exec-match-1", "wf-match-1"));
+
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        // Must succeed because matchedCount=1 (document exists with expected state)
+        assertTrue(result, "Claim must succeed when matchedCount=1 even if modifiedCount=0");
+        verify(executionService).enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime));
+    }
+
+    @Test
+    void processWorkflowSchedule_ConditionalInitialization_ConcurrentSchedulerAlreadyInitialized_Skips() {
+        // Phase 8.1.2 FIX #2: If another scheduler instance already initialized nextFireTime,
+        // the conditional init query should match 0 documents and skip.
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Workflow workflow = new Workflow("wf-init-race", "user-1", "Init Race WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:01:00Z");
+
+        // Simulate: another scheduler already set nextFireTime — matchedCount=0 (nextFireTime is no longer null)
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(0, 0L, null));
+
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertFalse(result);
+        // In-memory config should NOT be updated when conditional init fails
+        assertNull(config.getNextFireTime(), "In-memory nextFireTime must not be set when conditional init fails");
+        verifyNoInteractions(executionService);
+    }
+
+    @Test
+    void processWorkflowSchedule_ConditionalInitialization_UserChangedCronAfterRead_Skips() {
+        // Phase 8.1.2 FIX #2: If user changed cron between scheduler read and init write,
+        // the conditional query (matching old cron) should match 0 documents.
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Workflow workflow = new Workflow("wf-init-stale", "user-1", "Init Stale WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:01:00Z");
+
+        // User changed cron to something else — old cron doesn't match
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(0, 0L, null));
+
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertFalse(result);
+        assertNull(config.getNextFireTime(), "Must not initialize nextFireTime with stale cron");
+        verifyNoInteractions(executionService);
+    }
+
+    @Test
+    void processWorkflowSchedule_MisfireSkip_UserChangedScheduleDuringDowntime_DoesNotOverwrite() {
+        // Phase 8.1.2 FIX #3: If the user changed the schedule while the backend was down,
+        // the conditional misfire skip should not overwrite the user's new schedule.
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant oldScheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(oldScheduledTime);
+
+        Workflow workflow = new Workflow("wf-misfire-stale", "user-1", "Misfire Stale WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        // Simulate: backend restarted after downtime
+        scheduler.setStartupTime(Instant.parse("2026-10-01T10:06:00Z"));
+        Instant now = Instant.parse("2026-10-01T10:06:05Z");
+
+        // User changed schedule during downtime — conditional advance matches 0 docs
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(UpdateResult.acknowledged(0, 0L, null));
+
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertFalse(result);
+        // In-memory config must NOT be updated when conditional advance fails
+        assertEquals(oldScheduledTime, config.getNextFireTime(),
+                "In-memory nextFireTime must not change when conditional advance fails (user modified schedule)");
+        verifyNoInteractions(executionService);
     }
 }
 

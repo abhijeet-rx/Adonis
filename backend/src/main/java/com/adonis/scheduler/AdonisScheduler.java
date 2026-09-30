@@ -169,13 +169,21 @@ public class AdonisScheduler {
         Instant nextDue = config.getNextFireTime();
 
         // 1. First initialization: compute next valid occurrence from now
+        // Phase 8.1.2 FIX #2: Use conditional atomic update to prevent overwriting if user
+        // changed cron/timezone between our read and this write, or another scheduler already initialized.
         if (nextDue == null) {
             ZonedDateTime nextZoned = cron.next(nowZoned);
             if (nextZoned != null) {
                 Instant calculatedNext = nextZoned.toInstant();
-                config.setNextFireTime(calculatedNext);
-                updateNextFireTime(workflow.getId(), calculatedNext);
-                log.info("Initialized schedule for workflow {}: nextFireTime={}", workflow.getId(), calculatedNext);
+                boolean initialized = conditionalInitNextFireTime(
+                        workflow.getId(), calculatedNext,
+                        config.getCronExpression(), config.getTimezone());
+                if (initialized) {
+                    config.setNextFireTime(calculatedNext);
+                    log.info("Initialized schedule for workflow {}: nextFireTime={}", workflow.getId(), calculatedNext);
+                } else {
+                    log.info("Schedule initialization skipped for workflow {} (concurrent init or schedule changed).", workflow.getId());
+                }
             }
             return false;
         }
@@ -188,13 +196,21 @@ public class AdonisScheduler {
         // 3. Strict Misfire policy check: DO_NOT_CATCH_UP
         // If nextDue occurred before application startup time, it was missed during downtime.
         // Under DO_NOT_CATCH_UP, we NEVER replay missed downtime occurrences or storm the queue.
+        // Phase 8.1.2 FIX #3: Use conditional update matching stale nextFireTime to prevent
+        // overwriting a user-modified schedule with stale-computed skip advancement.
         if (nextDue.isBefore(startupTime)) {
             log.warn("Misfire detected for workflow {}: scheduled occurrence {} was missed during downtime (before startup {}). Policy=DO_NOT_CATCH_UP. Skipping to next occurrence after now.",
                     workflow.getId(), nextDue, startupTime);
             ZonedDateTime nextZoned = cron.next(nowZoned);
             Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
-            config.setNextFireTime(calculatedNext);
-            updateNextFireTime(workflow.getId(), calculatedNext);
+            boolean advanced = conditionalAdvanceNextFireTime(
+                    workflow.getId(), nextDue, calculatedNext,
+                    config.getCronExpression(), config.getTimezone());
+            if (advanced) {
+                config.setNextFireTime(calculatedNext);
+            } else {
+                log.info("Misfire skip aborted for workflow {}: schedule changed concurrently.", workflow.getId());
+            }
             return false;
         }
 
@@ -211,7 +227,11 @@ public class AdonisScheduler {
         );
         Update claimTouchUpdate = new Update().set("updatedAt", Instant.now());
         UpdateResult claimCheck = mongoTemplate.updateFirst(scheduleQuery, claimTouchUpdate, Workflow.class);
-        if (claimCheck != null && claimCheck.getModifiedCount() == 0) {
+        // Phase 8.1.2 FIX #1: Use matchedCount instead of modifiedCount.
+        // modifiedCount returns 0 when the document matches but no fields actually changed
+        // (e.g., updatedAt was already the same value). matchedCount reliably confirms
+        // the document with our expected state exists.
+        if (claimCheck == null || claimCheck.getMatchedCount() == 0) {
             log.info("Workflow schedule modified or stale snapshot detected for workflow {}. Abandoning scheduler claim.", workflow.getId());
             return false;
         }
@@ -332,20 +352,37 @@ public class AdonisScheduler {
         occurrence.setErrorMessage(null);
         scheduledOccurrenceRepository.save(occurrence);
 
-        // Advance schedule once enqueued
-        ZonedDateTime nextZoned = cron.next(nowZoned);
-        Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
-        if (workflow.getTriggerConfig() != null) {
-            workflow.getTriggerConfig().setLastScheduledFireTime(nextDue);
-            workflow.getTriggerConfig().setNextFireTime(calculatedNext);
+        // Phase 8.1.2 FIX #4: Only advance fire times if the occurrence's scheduledFireTime
+        // matches the workflow's current nextFireTime. If the schedule changed since this
+        // occurrence was created, advancing would overwrite the user's fresh schedule state.
+        WorkflowTriggerConfig currentConfig = workflow.getTriggerConfig();
+        boolean shouldAdvanceSchedule = currentConfig != null
+                && (nextDue.equals(currentConfig.getNextFireTime())
+                    || currentConfig.getNextFireTime() == null);
+
+        if (shouldAdvanceSchedule) {
+            ZonedDateTime nextZoned = cron.next(nowZoned);
+            Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
+            currentConfig.setLastScheduledFireTime(nextDue);
+            currentConfig.setNextFireTime(calculatedNext);
+            conditionalAdvanceFireTimes(workflow.getId(), nextDue, calculatedNext, nextDue);
+        } else {
+            log.info("Skipping fire time advancement for recovered occurrence {}: schedule has diverged (currentNextFireTime={}).",
+                    occurrence.getId(), currentConfig != null ? currentConfig.getNextFireTime() : "null");
         }
-        updateFireTimes(workflow.getId(), calculatedNext, nextDue);
 
         log.info("Scheduled occurrence recovered and enqueued: executionId={}, occurrenceKey={}",
                 response.executionId(), occurrence.getId());
         return true;
     }
 
+    /**
+     * Phase 8.1.2 FIX #4: Guard FAILED_RETRYABLE recovery against schedule changes.
+     * If the workflow's cron/timezone/triggerType changed since the occurrence was created,
+     * the occurrence is no longer relevant and should not trigger automatic recovery.
+     * Only occurrences whose scheduledFireTime matches the current nextFireTime (still pending)
+     * or whose workflow schedule hasn't changed are eligible for recovery.
+     */
     private int recoverOrphanFailedOccurrences(Instant now) {
         List<ScheduledOccurrence> failedOccurrences = scheduledOccurrenceRepository.findByStatus(ScheduledOccurrenceStatus.FAILED_RETRYABLE);
         if (failedOccurrences.isEmpty()) {
@@ -358,6 +395,9 @@ public class AdonisScheduler {
                 Optional<Workflow> wfOpt = workflowRepository.findById(occurrence.getWorkflowId());
                 if (wfOpt.isEmpty() || wfOpt.get().getStatus() != WorkflowStatus.ACTIVE
                         || wfOpt.get().getTriggerType() != WorkflowTriggerType.SCHEDULE) {
+                    // Workflow deleted, deactivated, or trigger type changed — skip recovery
+                    log.info("Skipping FAILED_RETRYABLE recovery for occurrence {}: workflow no longer ACTIVE/SCHEDULE.",
+                            occurrence.getId());
                     continue;
                 }
                 Workflow wf = wfOpt.get();
@@ -365,11 +405,27 @@ public class AdonisScheduler {
                 if (config == null || config.getCronExpression() == null) {
                     continue;
                 }
+
+                // Phase 8.1.2 FIX #4: Verify the occurrence is still relevant to the current schedule.
+                // If nextFireTime has already advanced past this occurrence's scheduledFireTime,
+                // AND the occurrence's fire time doesn't match the current nextFireTime,
+                // the schedule was modified or another scheduler already advanced past it.
+                Instant currentNextFireTime = config.getNextFireTime();
+                Instant occurrenceFireTime = occurrence.getScheduledFireTime();
+                if (currentNextFireTime != null && !currentNextFireTime.equals(occurrenceFireTime)
+                        && occurrenceFireTime.isBefore(currentNextFireTime)) {
+                    // The schedule has advanced beyond this occurrence — it's orphaned from a previous schedule.
+                    // Still recover the execution (it was already created), but do NOT advance fire times.
+                    log.info("FAILED_RETRYABLE occurrence {} predates current schedule (nextFireTime={}). "
+                                    + "Will recover execution but not advance fire times.",
+                            occurrence.getId(), currentNextFireTime);
+                }
+
                 ZoneId zoneId = WorkflowTriggerValidator.parseAndValidateZoneId(config.getTimezone());
                 CronExpression cron = WorkflowTriggerValidator.parseAndValidateCron(config.getCronExpression());
                 ZonedDateTime nowZoned = ZonedDateTime.ofInstant(now, zoneId);
 
-                boolean success = recoverAndEnqueueOccurrence(wf, occurrence, occurrence.getScheduledFireTime(), cron, nowZoned);
+                boolean success = recoverAndEnqueueOccurrence(wf, occurrence, occurrenceFireTime, cron, nowZoned);
                 if (success) {
                     recovered++;
                 }
@@ -402,13 +458,82 @@ public class AdonisScheduler {
         return false;
     }
 
-    private void updateNextFireTime(String workflowId, Instant nextFireTime) {
-        Query query = Query.query(Criteria.where("_id").is(workflowId));
+    /**
+     * Phase 8.1.2 FIX #2: Conditional initialization of nextFireTime.
+     * Only sets nextFireTime if the document still has nextFireTime == null
+     * AND the cron/timezone haven't changed since we read the workflow.
+     *
+     * @return true if the update matched (initialization applied), false if schedule changed or already initialized
+     */
+    private boolean conditionalInitNextFireTime(String workflowId, Instant nextFireTime,
+                                                 String expectedCron, String expectedTimezone) {
+        Query query = Query.query(
+                Criteria.where("_id").is(workflowId)
+                        .and("status").is(WorkflowStatus.ACTIVE)
+                        .and("triggerType").is(WorkflowTriggerType.SCHEDULE)
+                        .and("triggerConfig.cronExpression").is(expectedCron)
+                        .and("triggerConfig.timezone").is(expectedTimezone)
+                        .and("triggerConfig.nextFireTime").is(null)
+        );
         Update update = new Update();
         if (nextFireTime != null) {
             update.set("triggerConfig.nextFireTime", nextFireTime);
+        }
+        update.set("updatedAt", Instant.now());
+        UpdateResult result = mongoTemplate.updateFirst(query, update, Workflow.class);
+        return result != null && result.getMatchedCount() > 0;
+    }
+
+    /**
+     * Phase 8.1.2 FIX #3: Conditional advancement of nextFireTime for misfire/skip.
+     * Only updates if the document still has the expected stale nextFireTime
+     * AND cron/timezone haven't changed since we read.
+     *
+     * @return true if the update matched, false if schedule was modified concurrently
+     */
+    private boolean conditionalAdvanceNextFireTime(String workflowId, Instant expectedCurrentNextFireTime,
+                                                    Instant newNextFireTime,
+                                                    String expectedCron, String expectedTimezone) {
+        Query query = Query.query(
+                Criteria.where("_id").is(workflowId)
+                        .and("status").is(WorkflowStatus.ACTIVE)
+                        .and("triggerType").is(WorkflowTriggerType.SCHEDULE)
+                        .and("triggerConfig.cronExpression").is(expectedCron)
+                        .and("triggerConfig.timezone").is(expectedTimezone)
+                        .and("triggerConfig.nextFireTime").is(expectedCurrentNextFireTime)
+        );
+        Update update = new Update();
+        if (newNextFireTime != null) {
+            update.set("triggerConfig.nextFireTime", newNextFireTime);
         } else {
             update.unset("triggerConfig.nextFireTime");
+        }
+        update.set("updatedAt", Instant.now());
+        UpdateResult result = mongoTemplate.updateFirst(query, update, Workflow.class);
+        return result != null && result.getMatchedCount() > 0;
+    }
+
+    /**
+     * Phase 8.1.2 FIX #4: Conditional fire time advancement for recovery.
+     * Only advances nextFireTime and lastScheduledFireTime if the current
+     * nextFireTime still matches the expected value (occurrence's scheduledFireTime).
+     */
+    private void conditionalAdvanceFireTimes(String workflowId, Instant expectedNextFireTime,
+                                              Instant newNextFireTime, Instant lastScheduledFireTime) {
+        Query query = Query.query(
+                Criteria.where("_id").is(workflowId)
+                        .and("triggerConfig.nextFireTime").is(expectedNextFireTime)
+        );
+        Update update = new Update();
+        if (newNextFireTime != null) {
+            update.set("triggerConfig.nextFireTime", newNextFireTime);
+        } else {
+            update.unset("triggerConfig.nextFireTime");
+        }
+        if (lastScheduledFireTime != null) {
+            update.set("triggerConfig.lastScheduledFireTime", lastScheduledFireTime);
+        } else {
+            update.unset("triggerConfig.lastScheduledFireTime");
         }
         update.set("updatedAt", Instant.now());
         mongoTemplate.updateFirst(query, update, Workflow.class);
