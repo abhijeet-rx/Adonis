@@ -11,12 +11,15 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Document(collection = "workflow_executions")
 @CompoundIndexes({
         @CompoundIndex(name = "wf_user_started_idx", def = "{'workflowId': 1, 'userId': 1, 'startedAt': -1}"),
-        @CompoundIndex(name = "user_started_idx", def = "{'userId': 1, 'startedAt': -1}")
+        @CompoundIndex(name = "user_started_idx", def = "{'userId': 1, 'startedAt': -1}"),
+        @CompoundIndex(name = "wf_idempotency_idx", def = "{'workflowId': 1, 'idempotencyKey': 1}", unique = true, partialFilter = "{'idempotencyKey': {'$exists': true, '$ne': null}}")
 })
 public class WorkflowExecution {
 
@@ -53,6 +56,13 @@ public class WorkflowExecution {
 
     private Instant lastHeartbeatAt;
 
+    @Indexed
+    private String scheduledOccurrence;
+
+    private String idempotencyKey;
+
+    private Map<String, Object> triggerPayload = new LinkedHashMap<>();
+
     public WorkflowExecution() {
     }
 
@@ -72,6 +82,14 @@ public class WorkflowExecution {
                              String triggerType, Instant queuedAt, Instant startedAt, Instant completedAt,
                              Long durationMs, List<NodeExecution> nodeExecutions, String error,
                              String workerId, Instant leaseUntil, Instant lastHeartbeatAt) {
+        this(id, workflowId, userId, status, triggerType, queuedAt, startedAt, completedAt, durationMs, nodeExecutions, error, workerId, leaseUntil, lastHeartbeatAt, null, null, null);
+    }
+
+    public WorkflowExecution(String id, String workflowId, String userId, ExecutionStatus status,
+                             String triggerType, Instant queuedAt, Instant startedAt, Instant completedAt,
+                             Long durationMs, List<NodeExecution> nodeExecutions, String error,
+                             String workerId, Instant leaseUntil, Instant lastHeartbeatAt,
+                             String scheduledOccurrence, String idempotencyKey, Map<String, Object> triggerPayload) {
         this.id = id;
         this.workflowId = workflowId;
         this.userId = userId;
@@ -86,6 +104,9 @@ public class WorkflowExecution {
         this.workerId = workerId;
         this.leaseUntil = leaseUntil;
         this.lastHeartbeatAt = lastHeartbeatAt;
+        this.scheduledOccurrence = scheduledOccurrence;
+        this.idempotencyKey = idempotencyKey;
+        this.triggerPayload = triggerPayload != null ? SecretRedactor.redactMap(triggerPayload) : new LinkedHashMap<>();
     }
 
     public static WorkflowExecution queued(String workflowId, String userId, String triggerType) {
@@ -95,12 +116,15 @@ public class WorkflowExecution {
                 workflowId,
                 userId,
                 ExecutionStatus.QUEUED,
-                triggerType != null ? triggerType : "manual",
+                triggerType != null ? triggerType : "MANUAL",
                 now,
                 null,
                 null,
                 null,
                 new ArrayList<>(),
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -115,12 +139,15 @@ public class WorkflowExecution {
                 workflowId,
                 userId,
                 ExecutionStatus.RUNNING,
-                triggerType != null ? triggerType : "manual",
+                triggerType != null ? triggerType : "MANUAL",
                 now,
                 now,
                 null,
                 null,
                 new ArrayList<>(),
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -279,5 +306,29 @@ public class WorkflowExecution {
 
     public void setLastHeartbeatAt(Instant lastHeartbeatAt) {
         this.lastHeartbeatAt = lastHeartbeatAt;
+    }
+
+    public String getScheduledOccurrence() {
+        return scheduledOccurrence;
+    }
+
+    public void setScheduledOccurrence(String scheduledOccurrence) {
+        this.scheduledOccurrence = scheduledOccurrence;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public void setIdempotencyKey(String idempotencyKey) {
+        this.idempotencyKey = idempotencyKey;
+    }
+
+    public Map<String, Object> getTriggerPayload() {
+        return triggerPayload != null ? triggerPayload : new LinkedHashMap<>();
+    }
+
+    public void setTriggerPayload(Map<String, Object> triggerPayload) {
+        this.triggerPayload = triggerPayload != null ? SecretRedactor.redactMap(triggerPayload) : new LinkedHashMap<>();
     }
 }

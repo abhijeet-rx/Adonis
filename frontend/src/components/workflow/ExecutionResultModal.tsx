@@ -179,6 +179,19 @@ export const ExecutionResultModal: React.FC<ExecutionResultModalProps> = ({ resu
           </div>
 
           <div className="flex items-center gap-4">
+            {result.triggerType && (
+              <span
+                className={`text-[10px] font-mono px-2 py-0.5 rounded border uppercase font-medium ${
+                  result.triggerType.toUpperCase() === 'SCHEDULE'
+                    ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                    : result.triggerType.toUpperCase() === 'WEBHOOK'
+                    ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                    : 'bg-sky-500/10 text-sky-300 border-sky-500/30'
+                }`}
+              >
+                Trigger: {result.triggerType}
+              </span>
+            )}
             <span className="flex items-center gap-1">
               <Clock className="w-3.5 h-3.5 text-slate-500" />
               {nodesList.length} {nodesList.length === 1 ? 'node' : 'nodes'} in trace

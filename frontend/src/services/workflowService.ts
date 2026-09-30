@@ -20,6 +20,31 @@ export interface WorkflowEdge {
   targetHandle?: string;
 }
 
+export type WorkflowTriggerType = 'MANUAL' | 'SCHEDULE' | 'WEBHOOK';
+
+export interface WorkflowTriggerConfig {
+  cronExpression?: string | null;
+  timezone?: string | null;
+  webhookPath?: string | null;
+  secretMasked?: string | null;
+  secretConfigured?: boolean;
+  lastScheduledFireTime?: string | null;
+  nextFireTime?: string | null;
+}
+
+export interface WorkflowTriggerConfigRequest {
+  cronExpression?: string | null;
+  timezone?: string | null;
+  webhookSecret?: string | null;
+}
+
+export interface WebhookRegenerateResponse {
+  webhookPath: string;
+  rawSecret: string;
+  maskedSecret: string;
+  message: string;
+}
+
 export interface Workflow {
   id: string;
   userId: string;
@@ -28,6 +53,8 @@ export interface Workflow {
   status: WorkflowStatus;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  triggerType?: WorkflowTriggerType;
+  triggerConfig?: WorkflowTriggerConfig;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +65,8 @@ export interface CreateWorkflowRequest {
   status?: WorkflowStatus;
   nodes?: WorkflowNode[];
   edges?: WorkflowEdge[];
+  triggerType?: WorkflowTriggerType;
+  triggerConfig?: WorkflowTriggerConfigRequest;
 }
 
 export interface UpdateWorkflowRequest {
@@ -46,6 +75,8 @@ export interface UpdateWorkflowRequest {
   status?: WorkflowStatus;
   nodes?: WorkflowNode[];
   edges?: WorkflowEdge[];
+  triggerType?: WorkflowTriggerType;
+  triggerConfig?: WorkflowTriggerConfigRequest;
 }
 
 export type ExecutionStatus = 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED';
@@ -142,7 +173,7 @@ export interface PageResponse<T> {
   last: boolean;
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
 export const workflowApi = {
   async listWorkflows(token: string): Promise<Workflow[]> {
@@ -290,6 +321,21 @@ export const workflowApi = {
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(errorData.message || `Failed to fetch executions (HTTP ${res.status})`);
+    }
+    return res.json();
+  },
+
+  async regenerateWebhook(id: string, token: string): Promise<WebhookRegenerateResponse> {
+    const res = await fetch(`${API_BASE_URL}/api/workflows/${encodeURIComponent(id)}/webhook/regenerate`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json'
+      }
+    });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || `Failed to regenerate webhook secret (HTTP ${res.status})`);
     }
     return res.json();
   }

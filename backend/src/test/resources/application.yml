@@ -17,3 +17,7 @@ adonis:
     enabled: false
   queue:
     type: in-memory
+  scheduler:
+    enabled: false
+  webhook:
+    max-body-size-bytes: 1048576

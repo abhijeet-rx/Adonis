@@ -2,7 +2,10 @@ package com.adonis.execution;
 
 import com.adonis.model.Workflow;
 import com.adonis.model.WorkflowEdge;
+import com.adonis.model.WorkflowExecution;
 import com.adonis.model.WorkflowNode;
+import com.adonis.model.WorkflowTriggerType;
+import com.adonis.repository.WorkflowExecutionRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -14,15 +17,24 @@ public class WorkflowExecutionEngine {
 
     private final List<NodeExecutor> executors;
     private final RetryPolicy retryPolicy;
+    private final WorkflowExecutionRepository executionRepository;
 
     public WorkflowExecutionEngine(List<NodeExecutor> executors) {
-        this(executors, new RetryPolicy(new FailureClassifier()));
+        this(executors, new RetryPolicy(new FailureClassifier()), null);
+    }
+
+    public WorkflowExecutionEngine(List<NodeExecutor> executors, RetryPolicy retryPolicy) {
+        this(executors, retryPolicy, null);
     }
 
     @Autowired
-    public WorkflowExecutionEngine(List<NodeExecutor> executors, RetryPolicy retryPolicy) {
+    public WorkflowExecutionEngine(
+            List<NodeExecutor> executors,
+            @Autowired(required = false) RetryPolicy retryPolicy,
+            @Autowired(required = false) WorkflowExecutionRepository executionRepository) {
         this.executors = executors != null ? executors : List.of();
         this.retryPolicy = retryPolicy != null ? retryPolicy : new RetryPolicy(new FailureClassifier());
+        this.executionRepository = executionRepository;
     }
 
     /**
@@ -35,13 +47,43 @@ public class WorkflowExecutionEngine {
      * @return structured WorkflowExecutionResult
      */
     public WorkflowExecutionResult execute(Workflow workflow, List<WorkflowNode> executionOrder, String userId) {
-        return execute(workflow, executionOrder, userId, UUID.randomUUID().toString());
+        return execute(workflow, executionOrder, userId, UUID.randomUUID().toString(), TriggerContext.manual(userId));
     }
 
     public WorkflowExecutionResult execute(Workflow workflow, List<WorkflowNode> executionOrder, String userId, String executionId) {
+        TriggerContext triggerContext = resolveTriggerContext(workflow, userId, executionId);
+        return execute(workflow, executionOrder, userId, executionId, triggerContext);
+    }
+
+    private TriggerContext resolveTriggerContext(Workflow workflow, String userId, String executionId) {
+        if (executionRepository != null && executionId != null) {
+            try {
+                Optional<WorkflowExecution> execOpt = executionRepository.findById(executionId);
+                if (execOpt.isPresent()) {
+                    WorkflowExecution exec = execOpt.get();
+                    WorkflowTriggerType triggerType = WorkflowTriggerType.from(exec.getTriggerType());
+                    Map<String, Object> payload = exec.getTriggerPayload() != null ? exec.getTriggerPayload() : Map.of();
+                    return new TriggerContext(triggerType, payload, Map.of("userId", userId != null ? userId : ""));
+                }
+            } catch (Exception ignored) {
+                // Fall back gracefully if repository lookup fails
+            }
+        }
+        if (workflow != null && workflow.getTriggerType() != null && workflow.getTriggerType() != WorkflowTriggerType.MANUAL) {
+            return new TriggerContext(workflow.getTriggerType(), Map.of(), Map.of("userId", userId != null ? userId : ""));
+        }
+        return TriggerContext.manual(userId);
+    }
+
+    public WorkflowExecutionResult execute(
+            Workflow workflow,
+            List<WorkflowNode> executionOrder,
+            String userId,
+            String executionId,
+            TriggerContext triggerContext) {
         Instant startedAt = Instant.now();
         String effectiveExecutionId = executionId != null ? executionId : UUID.randomUUID().toString();
-        ExecutionContext context = new ExecutionContext(effectiveExecutionId, workflow.getId(), userId, startedAt);
+        ExecutionContext context = new ExecutionContext(effectiveExecutionId, workflow.getId(), userId, startedAt, triggerContext);
 
         // Map node ID to list of upstream node IDs targeting it
         Map<String, List<String>> upstreamMap = new HashMap<>();

@@ -16,20 +16,57 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-## 2. Current Architecture (Phase 7.1 Operational)
+## 2. Current Architecture (Phase 8 Operational)
 
-In Phase 7.1, the operational system topology provides an interactive visual workflow canvas integrated with persistent workflow definitions, asynchronous Redis Streams queueing, consumer groups, autonomous worker processes with crash recovery, and persistent execution history:
+In Phase 8, the operational system topology adds a dedicated **Trigger Layer** (`Manual API`, `Scheduler`, and `Webhook API`) producing execution events into the unified Redis Streams asynchronous execution pipeline:
+
+### Trigger Layer Architecture
+
+```text
+                 ┌───────────────┐
+                 │ Manual API    │
+                 └───────┬───────┘
+                         │
+                 ┌───────▼───────┐
+                 │ Scheduler     │
+                 └───────┬───────┘
+                         │
+                 ┌───────▼───────┐
+                 │ Webhook API   │
+                 └───────┬───────┘
+                         │
+                         ▼
+               WorkflowExecutionService
+                         │
+                         ▼
+                  Redis Streams
+                         │
+                         ▼
+                  ExecutionWorker
+                         │
+                         ▼
+              WorkflowExecutionEngine
+                         │
+                         ▼
+                      MongoDB
+```
+
+### End-to-End System Topology
 
 ```text
 React (Vite + TypeScript + Tailwind + @xyflow/react)
    ├── Visual Workflow Builder (Canvas, MiniMap, Controls, Background)
    ├── Node Palette (Trigger, HTTP Request, Generic) & Node Config Drawer
+   ├── Trigger Configuration (Manual, Cron Schedule, Webhook Capability URL & Secret)
    ├── Run Workflow Action, Execution Results Modal & Execution History Panel
    └── Polling Client (1.5s interval until SUCCESS or FAILED)
    ↓ HTTP / JSON (Bearer JWT, CORS-enabled, 202 Accepted)
 Spring Boot REST API (Java 21, Spring Boot 3.3.4)
+   ├── WorkflowController (Manual POST /api/workflows/{id}/execute)
+   ├── WebhookController (Public POST /api/webhooks/{webhookPath} with secret & idempotency)
+   └── AdonisScheduler (Centralized Spring scheduled cron evaluator)
    ↓
-Spring Security + JWT (Stateless filter, BCrypt password encoder)
+Spring Security + JWT (Stateless filter, BCrypt password encoder, public webhooks permitAll)
    ↓
 Service Layer (AuthService, UserService, WorkflowService, WorkflowExecutionService)
    ↓ Enqueue ExecutionJob (executionId, workflowId, userId, triggerType, queuedAt)
@@ -41,17 +78,18 @@ Consumer Group (adonis-workers, XREADGROUP, PEL crash recovery)
    ↓
 ExecutionWorker (SmartLifecycle, Atomic findAndModify QUEUED -> RUNNING, XACK on persistent completion)
    ↓
-Execution Engine (Unchanged Core: Kahn's Topological Sort, RetryPolicy, Fail-Fast Runner)
+Execution Engine (Topological Sort, RetryPolicy, Fail-Fast Runner)
    ├── WorkflowExecutionValidator (7-rule graph & trigger validation)
-   ├── WorkflowExecutionEngine (sequential execution & upstream output resolution)
+   ├── WorkflowExecutionEngine (sequential execution, upstream resolution & TriggerContext injection)
    ├── NodeExecutors: TriggerNodeExecutor, HttpRequestNodeExecutor, GenericNodeExecutor
    ├── RetryPolicy (Phase 6 exponential backoff, attempt tracking, and failure classification)
    └── SecretRedactor (deep sanitization of sensitive headers, tokens, and credentials)
    ↓
 MongoDB (Spring Data MongoDB, 7.0 container)
    ├── Collection: users (unique index on lowercase email)
-   ├── Collection: workflows (nodes with positions & edges with handles, indexed by userId)
-   └── Collection: workflow_executions (status QUEUED/RUNNING/SUCCESS/FAILED, timestamps, duration, nodeExecutions)
+   ├── Collection: workflows (nodes, edges, triggerType, triggerConfig, indexed by userId)
+   ├── Collection: workflow_executions (status, timestamps, triggerType, scheduledOccurrence, idempotencyKey, triggerPayload)
+   └── Collection: scheduled_occurrences (compound unique index on workflowId + scheduledFireTime)
 ```
 
 ### Component Status (Implemented vs. Deferred)
@@ -61,7 +99,7 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Completed) |
 | **Spring Boot 3.3 REST Baseline** | **Operational** (`GET /api/health`) | Phase 0 (Completed) |
 | **React + TypeScript UI Shell** | **Operational** (Landing & Diagnostics) | Phase 0 (Completed) |
-| **MongoDB Persistence** | **Operational** (Documents `User`, `Workflow`, `WorkflowExecution`) | Phase 1, 2, 3 & 5 (Completed) |
+| **MongoDB Persistence** | **Operational** (Documents `User`, `Workflow`, `WorkflowExecution`, `ScheduledOccurrence`) | Phase 1, 2, 3, 5 & 8 (Completed) |
 | **Authentication & User Management** | **Operational** (Stateless JWT + BCrypt) | Phase 1 (Completed) |
 | **Protected User Profile API** | **Operational** (`GET /api/users/me`) | Phase 1 (Completed) |
 | **Workflow CRUD APIs** | **Operational** (`POST/GET/PUT/DELETE /api/workflows`) | Phase 2 (Completed) |
@@ -70,7 +108,7 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Execution History & Logs** | **Operational** (Persistent records, skipped nodes, redacting, pagination) | Phase 5 (Completed) |
 | **Retries & Failure Handling** | **Operational** (Exponential backoff, failure classification, attempt tracking) | Phase 6 (Completed) |
 | **Redis Asynchronous Workers** | **Operational** (Redis 7, ExecutionQueue, ExecutionWorker, 202 Accepted, Idempotency) | Phase 7 (Completed) |
-| **Scheduling & Webhooks** | *NOT Implemented* | Phase 8 (Scheduling + Webhooks) |
+| **Scheduling & Webhooks** | **Operational** (Cron, Timezones, Capability URLs, Secret Auth, Idempotency) | Phase 8 (Completed) |
 | **AI Intelligent Nodes** | *NOT Implemented* | Phase 9 (AI Nodes) |
 | **Automated Testing & Testcontainers** | *NOT Implemented* | Phase 10 (Testcontainers deferred to Phase 10) |
 | **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |

@@ -20,6 +20,10 @@ public interface WorkflowExecutionRepository extends MongoRepository<WorkflowExe
 
     Page<WorkflowExecution> findByUserIdAndStatus(String userId, ExecutionStatus status, Pageable pageable);
 
+    Optional<WorkflowExecution> findByWorkflowIdAndIdempotencyKey(String workflowId, String idempotencyKey);
+
+    Optional<WorkflowExecution> findByScheduledOccurrence(String scheduledOccurrence);
+
     long countByWorkflowIdAndUserId(String workflowId, String userId);
 
     long countByUserId(String userId);

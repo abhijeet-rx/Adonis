@@ -467,10 +467,31 @@ class WorkflowControllerTest {
     }
 
     @Test
-    void executeWorkflow_ShouldReturn401WhenUnauthenticated() throws Exception {
-        mockMvc.perform(post("/api/workflows/wf-101/execute"))
+    void regenerateWebhook_ShouldReturnNewSecretWhenAuthenticated() throws Exception {
+        com.adonis.dto.WebhookRegenerateResponse response = new com.adonis.dto.WebhookRegenerateResponse(
+                "wf-101",
+                "wh-path-new-1234",
+                "/api/webhooks/wh-path-new-1234",
+                "whsec_raw_secret_xyz"
+        );
+        when(workflowService.regenerateWebhook("wf-101", "user-A-id")).thenReturn(response);
+
+        mockMvc.perform(post("/api/workflows/wf-101/webhook/regenerate")
+                        .header("Authorization", "Bearer " + userAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.workflowId").value("wf-101"))
+                .andExpect(jsonPath("$.webhookPath").value("wh-path-new-1234"))
+                .andExpect(jsonPath("$.webhookUrl").value("/api/webhooks/wh-path-new-1234"))
+                .andExpect(jsonPath("$.secret").value("whsec_raw_secret_xyz"));
+
+        verify(workflowService).regenerateWebhook("wf-101", "user-A-id");
+    }
+
+    @Test
+    void regenerateWebhook_ShouldReturn401WhenUnauthenticated() throws Exception {
+        mockMvc.perform(post("/api/workflows/wf-101/webhook/regenerate"))
                 .andExpect(status().isUnauthorized());
 
-        verify(executionService, never()).enqueueExecution(any(), any());
+        verify(workflowService, never()).regenerateWebhook(any(), any());
     }
 }

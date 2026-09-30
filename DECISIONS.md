@@ -331,7 +331,7 @@ This document records the architectural and technical decisions made during the 
 
 ## Phase 7.1.1: Worker Lease & Stale Execution Hardening
 
-### ADR-022: Renewable Worker Ownership Leases, Background Heartbeats, and Safe Expired Lease Recovery
+### ADR-021.1: Renewable Worker Ownership Leases, Background Heartbeats, and Safe Expired Lease Recovery
 * **Date**: 2026-09-29
 * **Status**: Accepted
 * **Context**:
@@ -369,6 +369,49 @@ This document records the architectural and technical decisions made during the 
 * **Consequences**:
   - Positive: Legitimate long-running workflows can run indefinitely as long as worker heartbeats succeed; worker crashes are reliably detected when leases expire; race conditions between multiple workers during takeover are prevented via atomic MongoDB operations; heartbeat threads are bounded and fully cleaned up upon execution completion or shutdown.
   - Trade-off: Workflows interrupted by worker crash are marked `FAILED` rather than automatically resumed mid-graph, preserving strict idempotency against duplicate external side effects.
+
+---
+
+## Phase 8: Scheduling + Webhooks
+
+### ADR-022: Scheduling and Webhook Triggers
+* **Date**: 2026-09-30
+* **Status**: Accepted
+* **Context**:
+  Workflows in Adonis previously required manual invocation via authenticated API requests (`POST /api/workflows/{id}/execute`). Production automation platforms require automated triggers: time-based recurrence (cron schedules) and inbound HTTP notifications (webhooks). A critical architectural constraint is that triggers must NOT introduce a second execution pipeline or bypass the Phase 7 asynchronous worker architecture.
+* **Decision**:
+  - **Asynchronous Trigger Producer Model**:
+    Neither the cron scheduler (`AdonisScheduler`) nor the webhook controller (`WebhookController`) directly invokes `WorkflowExecutionEngine`. Both components act strictly as trigger producers that create a persistent `WorkflowExecution` record in `QUEUED` status and publish an `ExecutionJob` to Redis Streams (`ExecutionQueue`). The existing `ExecutionWorker` pool claims jobs, enforces worker leases, executes nodes, and handles retries.
+  - **Why the Scheduler and Webhook Controller Must Not Directly Execute Workflows**:
+    Direct synchronous execution would bypass Redis Streams queuing, worker concurrency controls, distributed lease heartbeats, stale execution recovery, and Phase 6 failure classification/retries. Enqueuing via `WorkflowExecutionService` preserves a single, unified execution path across all trigger types.
+  - **Spring-Compatible Cron Evaluation**:
+    Scheduled workflows define cron expressions parsed using Spring's `CronExpression`. Standard 5-field (minute, hour, day, month, weekday) and 6-field (second, minute, hour, day, month, weekday) expressions are supported. Workflows are only evaluated if their status is `ACTIVE`.
+  - **Timezone Support**:
+    Scheduled workflows support arbitrary IANA timezone identifiers (e.g. `Asia/Kolkata`, `America/New_York`, `UTC`), validated using `java.time.ZoneId`. If unconfigured, the scheduler defaults safely to `UTC`. Invalid timezone strings are rejected during workflow validation and isolated so they never crash the scheduler.
+  - **Downtime Misfire Policy (`DO_NOT_CATCH_UP`)**:
+    If the backend is down during a scheduled window, missed historical occurrences are NOT replayed upon application restart. Replaying hundreds of missed runs can trigger execution storms, exhaust database connections, and duplicate external HTTP requests. The scheduler skips missed executions and schedules from the next valid occurrence after the current timestamp.
+  - **Durable Multi-Instance Duplicate Protection**:
+    Multiple backend instances may run the scheduler concurrently. To prevent duplicate scheduled executions without distributed locks or static JVM synchronizations, Adonis employs a dedicated MongoDB collection (`scheduled_occurrences`) with a compound unique index on `(workflowId, scheduledFireTime)`. Before enqueuing, the scheduler atomically attempts an insert. If a duplicate key error (`DuplicateKeyException`) occurs, another instance has already claimed that occurrence, and the duplicate is silently discarded.
+  - **Fault Isolation per Workflow**:
+    The centralized scheduler evaluates active workflows iteratively inside a try/catch block. A syntax error, invalid timezone, or transient failure in one workflow logs a structured warning and continues to evaluate remaining workflows.
+  - **Scheduler Enable/Disable Configuration**:
+    Controlled via `adonis.scheduler.enabled: true` (environment variable `SCHEDULER_ENABLED`). Allows disabling scheduling in worker-only nodes, integration tests, or local environments.
+  - **Webhook Capability URLs**:
+    Webhook endpoints use opaque, cryptographically secure 64-character hex capability identifiers (`/api/webhooks/{webhookPath}`) generated via `SecureRandom`. Internal MongoDB workflow IDs are never used as public trigger paths, preventing enumeration attacks.
+  - **Constant-Time Secret Authentication**:
+    Optional webhook secrets sent via `X-Webhook-Secret` are verified using constant-time comparison (`MessageDigest.isEqual`) on SHA-256 digests, eliminating side-channel timing attacks. Plaintext secrets are never stored in MongoDB (only SHA-256 digests are persisted), never logged, and never returned in API responses.
+  - **Bounded Payloads & Deep Redaction**:
+    Webhook requests are bounded by `adonis.webhook.max-body-size-bytes` (default 1MB, returning HTTP `413 Payload Too Large`). Incoming headers, query parameters, and JSON payloads are sanitized via `SecretRedactor` to strip credentials, cookies, and bearer tokens before saving into `WorkflowExecution.triggerPayload`.
+  - **Webhook Idempotency Key**:
+    Webhooks support an optional `Idempotency-Key` header. If provided, duplicate delivery requests within the same workflow return the existing execution ID without enqueuing a duplicate job, backed by a MongoDB partial unique index on `(workflowId, idempotencyKey)`.
+  - **HTTP 202 Accepted Response**:
+    Webhook endpoints return HTTP `202 Accepted` with `{ "executionId": "...", "status": "QUEUED" }` immediately upon enqueuing. Clients receive fast acknowledgment and do not block waiting for execution completion.
+  - **TriggerContext Propagation**:
+    The execution engine receives a structured `TriggerContext` (type: `MANUAL`, `SCHEDULE`, `WEBHOOK`, payload, metadata) via `ExecutionContext`, enabling trigger nodes to pass trigger payloads downstream without knowing about HTTP controllers or scheduler internals.
+* **Consequences**:
+  - Positive: Consistent execution semantics across all trigger types; durable duplicate protection across multiple backend instances; resilient downtime recovery; zero leakage of sensitive secrets; immune to timing attacks; unifies manual, scheduled, and webhook flows in execution history and visual builder.
+  - Trade-off: Missed scheduled runs during downtime are discarded rather than backfilled, requiring manual execution if historical batch processing is desired.
+
 
 
 

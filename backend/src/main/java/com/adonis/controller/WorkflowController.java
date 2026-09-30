@@ -72,6 +72,15 @@ public class WorkflowController {
         return ResponseEntity.noContent().build();
     }
 
+    @PostMapping("/{id}/webhook/regenerate")
+    public ResponseEntity<com.adonis.dto.WebhookRegenerateResponse> regenerateWebhook(
+            @PathVariable String id,
+            Authentication authentication) {
+        UserPrincipal principal = getAuthenticatedPrincipal(authentication);
+        com.adonis.dto.WebhookRegenerateResponse response = workflowService.regenerateWebhook(id, principal.id());
+        return ResponseEntity.ok(response);
+    }
+
     @PostMapping("/{id}/execute")
     public ResponseEntity<com.adonis.dto.ExecuteWorkflowResponse> executeWorkflow(
             @PathVariable String id,

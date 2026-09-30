@@ -3,6 +3,7 @@ package com.adonis.dto;
 import com.adonis.model.WorkflowEdge;
 import com.adonis.model.WorkflowNode;
 import com.adonis.model.WorkflowStatus;
+import com.adonis.model.WorkflowTriggerType;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
@@ -20,6 +21,14 @@ public record CreateWorkflowRequest(
 
         List<WorkflowNode> nodes,
 
-        List<WorkflowEdge> edges
+        List<WorkflowEdge> edges,
+
+        WorkflowTriggerType triggerType,
+
+        WorkflowTriggerConfigRequest triggerConfig
 ) {
+    public CreateWorkflowRequest(String name, String description, WorkflowStatus status,
+                                 List<WorkflowNode> nodes, List<WorkflowEdge> edges) {
+        this(name, description, status, nodes, edges, WorkflowTriggerType.MANUAL, null);
+    }
 }

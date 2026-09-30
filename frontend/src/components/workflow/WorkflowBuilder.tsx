@@ -28,7 +28,8 @@ import {
   RefreshCw,
   Sparkles,
   Play,
-  History
+  History,
+  Zap
 } from 'lucide-react';
 
 import {
@@ -48,6 +49,8 @@ import {
   workflowApi,
   type Workflow,
   type WorkflowStatus,
+  type WorkflowTriggerType,
+  type WorkflowTriggerConfig,
   type WorkflowExecutionResult,
   type ExecutionResponse
 } from '../../services/workflowService';
@@ -73,6 +76,8 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
   const [workflowName, setWorkflowName] = useState('');
   const [workflowDescription, setWorkflowDescription] = useState('');
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>('DRAFT');
+  const [workflowTriggerType, setWorkflowTriggerType] = useState<WorkflowTriggerType>('MANUAL');
+  const [workflowTriggerConfig, setWorkflowTriggerConfig] = useState<WorkflowTriggerConfig | undefined>(undefined);
 
   // Loading & Error States
   const [isLoading, setIsLoading] = useState(true);
@@ -130,6 +135,8 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
       setWorkflowName(data.name);
       setWorkflowDescription(data.description || '');
       setWorkflowStatus(data.status);
+      setWorkflowTriggerType(data.triggerType || 'MANUAL');
+      setWorkflowTriggerConfig(data.triggerConfig);
 
       const { nodes: flowNodes, edges: flowEdges } = workflowToReactFlow(data);
       setNodes(flowNodes);
@@ -317,12 +324,19 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
           description: workflowDescription.trim() || undefined,
           status: workflowStatus,
           nodes: convertedNodes,
-          edges: convertedEdges
+          edges: convertedEdges,
+          triggerType: workflowTriggerType,
+          triggerConfig: workflowTriggerConfig ? {
+            cronExpression: workflowTriggerConfig.cronExpression,
+            timezone: workflowTriggerConfig.timezone
+          } : undefined
         },
         token
       );
 
       setWorkflow(updated);
+      setWorkflowTriggerType(updated.triggerType || 'MANUAL');
+      setWorkflowTriggerConfig(updated.triggerConfig);
       setIsDirty(false);
       setSuccessMessage('Workflow saved successfully!');
       if (onWorkflowSaved) {
@@ -356,11 +370,18 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
             description: workflowDescription.trim() || undefined,
             status: workflowStatus,
             nodes: convertedNodes,
-            edges: convertedEdges
+            edges: convertedEdges,
+            triggerType: workflowTriggerType,
+            triggerConfig: workflowTriggerConfig ? {
+              cronExpression: workflowTriggerConfig.cronExpression,
+              timezone: workflowTriggerConfig.timezone
+            } : undefined
           },
           token
         );
         setWorkflow(updated);
+        setWorkflowTriggerType(updated.triggerType || 'MANUAL');
+        setWorkflowTriggerConfig(updated.triggerConfig);
         setIsDirty(false);
         if (onWorkflowSaved) {
           onWorkflowSaved(updated);
@@ -501,6 +522,35 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
               <option value="DRAFT">DRAFT</option>
               <option value="ACTIVE">ACTIVE</option>
             </select>
+
+            {/* Workflow Trigger Mode Badge */}
+            <button
+              type="button"
+              onClick={() => {
+                const triggerNode = nodes.find((n) => n.type === NODE_TYPES.TRIGGER);
+                if (triggerNode) {
+                  setSelectedNodeId(triggerNode.id);
+                } else {
+                  addNodeAtPosition(NODE_TYPES.TRIGGER);
+                }
+              }}
+              className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border flex items-center gap-1 transition ${
+                workflowTriggerType === 'SCHEDULE'
+                  ? 'bg-purple-500/10 text-purple-400 border-purple-500/30 hover:bg-purple-500/20'
+                  : workflowTriggerType === 'WEBHOOK'
+                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20'
+                  : 'bg-sky-500/10 text-sky-400 border-sky-500/30 hover:bg-sky-500/20'
+              }`}
+              title="Click to configure workflow trigger"
+            >
+              <Zap className="w-2.5 h-2.5" />
+              <span>{workflowTriggerType}</span>
+              {workflowTriggerType === 'SCHEDULE' && workflowTriggerConfig?.cronExpression && (
+                <span className="text-[9px] text-purple-300 font-normal hidden lg:inline">
+                  ({workflowTriggerConfig.cronExpression})
+                </span>
+              )}
+            </button>
           </div>
         </div>
 
@@ -700,9 +750,26 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
           <NodeConfigPanel
             key={selectedNode.id}
             selectedNode={selectedNode}
+            workflow={workflow}
+            token={token}
             onUpdateNodeData={handleUpdateNodeData}
             onDeleteNode={handleDeleteNode}
             onClose={() => setSelectedNodeId(null)}
+            onUpdateWorkflowTrigger={(type, config) => {
+              setWorkflowTriggerType(type);
+              setWorkflowTriggerConfig((prev) => ({
+                ...prev,
+                cronExpression: config.cronExpression,
+                timezone: config.timezone
+              }));
+              setIsDirty(true);
+            }}
+            onWorkflowUpdated={(updated) => {
+              setWorkflow(updated);
+              setWorkflowTriggerType(updated.triggerType || 'MANUAL');
+              setWorkflowTriggerConfig(updated.triggerConfig);
+              setIsDirty(true);
+            }}
           />
         )}
 

@@ -10,6 +10,7 @@ import com.adonis.model.NodeExecution;
 import com.adonis.model.Workflow;
 import com.adonis.model.WorkflowExecution;
 import com.adonis.model.WorkflowNode;
+import com.adonis.model.WorkflowTriggerType;
 import com.adonis.queue.ExecutionJob;
 import com.adonis.queue.ExecutionQueue;
 import com.adonis.queue.QueueSubmissionException;
@@ -19,6 +20,7 @@ import com.adonis.util.SecretRedactor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -60,17 +62,12 @@ public class WorkflowExecutionService {
     }
 
     /**
-     * Asynchronously enqueues a workflow execution:
+     * Asynchronously enqueues a manual workflow execution:
      * 1. Authenticates & verifies ownership
      * 2. Validates workflow graph structure upfront
-     * 3. Creates execution record in QUEUED status
+     * 3. Creates execution record in QUEUED status with MANUAL trigger
      * 4. Enqueues job to Redis execution queue
-     * 5. Handles queue failure gracefully by marking execution FAILED in MongoDB
-     * 6. Returns 202 Accepted response payload
-     *
-     * @param workflowId the workflow ID
-     * @param userId the authenticated user ID
-     * @return asynchronous ExecuteWorkflowResponse containing executionId, workflowId, and QUEUED status
+     * 5. Returns 202 Accepted response payload
      */
     public ExecuteWorkflowResponse enqueueExecution(String workflowId, String userId) {
         Workflow workflow = workflowRepository.findByIdAndUserId(workflowId, userId)
@@ -79,12 +76,16 @@ public class WorkflowExecutionService {
         List<WorkflowNode> executionOrder = validator.validateAndOrder(workflow);
         String triggerType = determineTriggerType(executionOrder);
 
-        // 1. Create and persist initial execution record (QUEUED)
         WorkflowExecution execution = WorkflowExecution.queued(workflow.getId(), userId, triggerType);
+        Map<String, Object> manualPayload = new LinkedHashMap<>();
+        manualPayload.put("type", "MANUAL");
+        manualPayload.put("triggeredAt", Instant.now().toString());
+        manualPayload.put("userId", userId);
+        execution.setTriggerPayload(manualPayload);
+
         execution = executionRepository.save(execution);
         String executionId = execution.getId();
 
-        // 2. Enqueue job
         if (executionQueue == null) {
             log.error("ExecutionQueue is not configured; cannot enqueue execution: {}", executionId);
             execution.markQueueFailed("Execution queue service is unavailable");
@@ -107,31 +108,152 @@ public class WorkflowExecutionService {
     }
 
     /**
-     * Loads the workflow verifying ownership, validates its graph structure,
-     * persists an initial RUNNING execution record, sequentially executes nodes,
-     * updates the record to SUCCESS or FAILED with node-by-node details (including SKIPPED downstream nodes),
-     * and returns the deeply sanitized final execution result.
+     * Asynchronously enqueues a scheduled workflow execution through the Redis execution queue.
      *
-     * @param workflowId the workflow ID
-     * @param userId the authenticated user ID
-     * @return sanitized WorkflowExecutionResult
+     * @param workflow the scheduled workflow
+     * @param occurrenceKey unique idempotency occurrence key
+     * @param scheduledFireTime calculated schedule fire time
+     * @return 202 Accepted ExecuteWorkflowResponse
+     */
+    public ExecuteWorkflowResponse enqueueScheduledExecution(Workflow workflow, String occurrenceKey, Instant scheduledFireTime) {
+        Objects.requireNonNull(workflow, "Workflow must not be null");
+        validator.validateAndOrder(workflow);
+        String triggerType = WorkflowTriggerType.SCHEDULE.name();
+
+        WorkflowExecution execution = WorkflowExecution.queued(workflow.getId(), workflow.getUserId(), triggerType);
+        execution.setScheduledOccurrence(occurrenceKey);
+
+        Map<String, Object> schedulePayload = new LinkedHashMap<>();
+        schedulePayload.put("type", "SCHEDULE");
+        schedulePayload.put("scheduledFireTime", scheduledFireTime != null ? scheduledFireTime.toString() : Instant.now().toString());
+        if (workflow.getTriggerConfig() != null) {
+            schedulePayload.put("cronExpression", workflow.getTriggerConfig().getCronExpression());
+            schedulePayload.put("timezone", workflow.getTriggerConfig().getTimezone());
+        }
+        execution.setTriggerPayload(schedulePayload);
+
+        execution = executionRepository.save(execution);
+        String executionId = execution.getId();
+
+        if (executionQueue == null) {
+            log.error("ExecutionQueue is not configured; cannot enqueue scheduled execution: {}", executionId);
+            execution.markQueueFailed("Execution queue service is unavailable");
+            executionRepository.save(execution);
+            throw new QueueSubmissionException("Execution queue is not configured");
+        }
+
+        ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), workflow.getUserId(), triggerType, Instant.now());
+        try {
+            executionQueue.enqueue(job);
+            log.info("Scheduled workflow queued: executionId={}, workflowId={}, occurrenceKey={}",
+                    executionId, workflow.getId(), occurrenceKey);
+        } catch (Exception ex) {
+            log.error("Failed to enqueue scheduled job for executionId: {}", executionId, ex);
+            execution.markQueueFailed("Failed to queue scheduled execution");
+            executionRepository.save(execution);
+            throw new QueueSubmissionException("Failed to enqueue scheduled execution", ex);
+        }
+
+        return ExecuteWorkflowResponse.queued(executionId, workflow.getId());
+    }
+
+    /**
+     * Asynchronously enqueues a webhook-triggered workflow execution through the Redis execution queue,
+     * enforcing duplicate delivery protection via optional Idempotency-Key.
+     *
+     * @param workflow the active webhook-triggered workflow
+     * @param idempotencyKey optional idempotency key
+     * @param triggerPayload sanitized webhook payload
+     * @return 202 Accepted ExecuteWorkflowResponse
+     */
+    public ExecuteWorkflowResponse enqueueWebhookExecution(
+            Workflow workflow,
+            String idempotencyKey,
+            Map<String, Object> triggerPayload) {
+        Objects.requireNonNull(workflow, "Workflow must not be null");
+
+        String safeKey = idempotencyKey != null && !idempotencyKey.isBlank() ? idempotencyKey.trim() : null;
+        if (safeKey != null) {
+            Optional<WorkflowExecution> existingOpt = executionRepository.findByWorkflowIdAndIdempotencyKey(workflow.getId(), safeKey);
+            if (existingOpt.isPresent()) {
+                WorkflowExecution existing = existingOpt.get();
+                log.info("Duplicate webhook idempotency key ignored: workflowId={}, idempotencyKey={}, executionId={}",
+                        workflow.getId(), safeKey, existing.getId());
+                return new ExecuteWorkflowResponse(existing.getId(), workflow.getId(), existing.getStatus());
+            }
+        }
+
+        validator.validateAndOrder(workflow);
+        String triggerType = WorkflowTriggerType.WEBHOOK.name();
+
+        WorkflowExecution execution = WorkflowExecution.queued(workflow.getId(), workflow.getUserId(), triggerType);
+        execution.setIdempotencyKey(safeKey);
+        execution.setTriggerPayload(triggerPayload != null ? triggerPayload : Map.of());
+
+        try {
+            execution = executionRepository.save(execution);
+        } catch (DuplicateKeyException ex) {
+            if (safeKey != null) {
+                Optional<WorkflowExecution> existingOpt = executionRepository.findByWorkflowIdAndIdempotencyKey(workflow.getId(), safeKey);
+                if (existingOpt.isPresent()) {
+                    WorkflowExecution existing = existingOpt.get();
+                    log.info("Concurrent duplicate webhook idempotency key caught: workflowId={}, idempotencyKey={}, executionId={}",
+                            workflow.getId(), safeKey, existing.getId());
+                    return new ExecuteWorkflowResponse(existing.getId(), workflow.getId(), existing.getStatus());
+                }
+            }
+            throw ex;
+        }
+
+        String executionId = execution.getId();
+
+        if (executionQueue == null) {
+            log.error("ExecutionQueue is not configured; cannot enqueue webhook execution: {}", executionId);
+            execution.markQueueFailed("Execution queue service is unavailable");
+            executionRepository.save(execution);
+            throw new QueueSubmissionException("Execution queue is not configured");
+        }
+
+        ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), workflow.getUserId(), triggerType, Instant.now());
+        try {
+            executionQueue.enqueue(job);
+            log.info("Webhook execution queued: executionId={}, workflowId={}, idempotencyKey={}",
+                    executionId, workflow.getId(), safeKey);
+        } catch (Exception ex) {
+            log.error("Failed to enqueue webhook job for executionId: {}", executionId, ex);
+            execution.markQueueFailed("Failed to queue webhook execution");
+            executionRepository.save(execution);
+            throw new QueueSubmissionException("Failed to enqueue webhook execution", ex);
+        }
+
+        return ExecuteWorkflowResponse.queued(executionId, workflow.getId());
+    }
+
+    /**
+     * Synchronously executes workflow in-process (used for testing and immediate synchronous runs).
      */
     public WorkflowExecutionResult executeWorkflow(String workflowId, String userId) {
         Workflow workflow = workflowRepository.findByIdAndUserId(workflowId, userId)
                 .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found with id: " + workflowId));
 
         List<WorkflowNode> executionOrder = validator.validateAndOrder(workflow);
-        String triggerType = determineTriggerType(executionOrder);
+        String triggerType = WorkflowTriggerType.MANUAL.name();
 
         // 1. Create and persist initial execution record (RUNNING)
         WorkflowExecution execution = WorkflowExecution.start(workflow.getId(), userId, triggerType);
+        Map<String, Object> manualPayload = new LinkedHashMap<>();
+        manualPayload.put("type", "MANUAL");
+        manualPayload.put("userId", userId);
+        execution.setTriggerPayload(manualPayload);
+
         execution = executionRepository.save(execution);
         String executionId = execution.getId();
 
         // 2. Execute via in-process engine
         WorkflowExecutionResult engineResult;
+        TriggerContext triggerContext = TriggerContext.manual(userId);
         try {
-            engineResult = engine.execute(workflow, executionOrder, userId, executionId);
+            engineResult = engine.execute(workflow, executionOrder, userId, executionId, triggerContext);
         } catch (Exception ex) {
             Instant completedAt = Instant.now();
             String sanitizedError = SecretRedactor.redactString("Execution engine failure: " + ex.getMessage());
@@ -140,7 +262,7 @@ public class WorkflowExecutionService {
             throw ex;
         }
 
-        // 3. Transform node execution results with secret redaction for both API return and MongoDB persistence
+        // 3. Transform node execution results with secret redaction
         WorkflowExecutionResult sanitizedResult = SecretRedactor.sanitize(engineResult);
         List<NodeExecution> nodeExecutions = buildNodeExecutions(sanitizedResult.nodes(), executionOrder);
 
@@ -152,17 +274,9 @@ public class WorkflowExecutionService {
         }
         executionRepository.save(execution);
 
-        // 5. Return sanitized execution result to caller
         return sanitizedResult;
     }
 
-    /**
-     * Retrieves an individual execution record strictly scoped to the authenticated user.
-     *
-     * @param executionId execution ID
-     * @param userId authenticated user ID
-     * @return full detailed ExecutionResponse
-     */
     public ExecutionResponse getExecution(String executionId, String userId) {
         WorkflowExecution execution = executionRepository.findByIdAndUserId(executionId, userId)
                 .orElseThrow(() -> new ExecutionNotFoundException("Execution not found with id: " + executionId));
@@ -170,16 +284,7 @@ public class WorkflowExecutionService {
         return ExecutionResponse.fromModel(execution);
     }
 
-    /**
-     * Retrieves paginated execution history for a specific workflow owned by the authenticated user.
-     *
-     * @param workflowId workflow ID
-     * @param userId authenticated user ID
-     * @param pageable pagination parameters
-     * @return lightweight ExecutionSummaryResponse page
-     */
     public PageResponse<ExecutionSummaryResponse> getWorkflowExecutions(String workflowId, String userId, Pageable pageable) {
-        // Enforce workflow ownership first; hide cross-user existence with 404
         workflowRepository.findByIdAndUserId(workflowId, userId)
                 .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found with id: " + workflowId));
 
@@ -199,14 +304,6 @@ public class WorkflowExecutionService {
         );
     }
 
-    /**
-     * Retrieves global execution history for the authenticated user, optionally filtered by status.
-     *
-     * @param userId authenticated user ID
-     * @param status optional status filter
-     * @param pageable pagination parameters
-     * @return lightweight ExecutionSummaryResponse page
-     */
     public PageResponse<ExecutionSummaryResponse> getUserExecutions(String userId, ExecutionStatus status, Pageable pageable) {
         Page<WorkflowExecution> page;
         if (status != null) {
@@ -228,18 +325,6 @@ public class WorkflowExecutionService {
                 page.isFirst(),
                 page.isLast()
         );
-    }
-
-    private String determineTriggerType(List<WorkflowNode> executionOrder) {
-        if (executionOrder == null || executionOrder.isEmpty()) {
-            return "manual";
-        }
-        WorkflowNode firstNode = executionOrder.get(0);
-        if (firstNode.getData() != null && firstNode.getData().containsKey("triggerType")) {
-            Object type = firstNode.getData().get("triggerType");
-            return type != null ? type.toString() : "manual";
-        }
-        return "manual";
     }
 
     private List<NodeExecution> buildNodeExecutions(List<NodeExecutionResult> executedNodes, List<WorkflowNode> executionOrder) {
@@ -270,7 +355,6 @@ public class WorkflowExecutionService {
             }
         }
 
-        // Append skipped downstream nodes if fail-fast halted execution early
         if (executionOrder != null) {
             for (WorkflowNode node : executionOrder) {
                 if (!executedIds.contains(node.getId())) {
@@ -280,5 +364,17 @@ public class WorkflowExecutionService {
         }
 
         return results;
+    }
+
+    private String determineTriggerType(List<WorkflowNode> executionOrder) {
+        if (executionOrder == null || executionOrder.isEmpty()) {
+            return "manual";
+        }
+        WorkflowNode firstNode = executionOrder.get(0);
+        if (firstNode.getData() != null && firstNode.getData().containsKey("triggerType")) {
+            Object type = firstNode.getData().get("triggerType");
+            return type != null ? type.toString() : "manual";
+        }
+        return "manual";
     }
 }

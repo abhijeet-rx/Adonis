@@ -28,6 +28,12 @@ adonis:
     queue-name: ${EXECUTION_QUEUE_NAME:adonis:execution:stream}
   queue:
     type: ${QUEUE_TYPE:redis}
+  scheduler:
+    enabled: ${SCHEDULER_ENABLED:true}
+    polling-interval-ms: ${SCHEDULER_POLLING_INTERVAL_MS:10000}
+    misfire-threshold-ms: ${SCHEDULER_MISFIRE_THRESHOLD_MS:300000}
+  webhook:
+    max-body-size-bytes: ${WEBHOOK_MAX_BODY_SIZE_BYTES:1048576}
 
 management:
   endpoints:

@@ -27,6 +27,11 @@ public class Workflow {
 
     private List<WorkflowEdge> edges = new ArrayList<>();
 
+    @Indexed
+    private WorkflowTriggerType triggerType = WorkflowTriggerType.MANUAL;
+
+    private WorkflowTriggerConfig triggerConfig = new WorkflowTriggerConfig();
+
     private Instant createdAt;
 
     private Instant updatedAt;
@@ -36,6 +41,13 @@ public class Workflow {
 
     public Workflow(String id, String userId, String name, String description, WorkflowStatus status,
                     List<WorkflowNode> nodes, List<WorkflowEdge> edges, Instant createdAt, Instant updatedAt) {
+        this(id, userId, name, description, status, nodes, edges, WorkflowTriggerType.MANUAL, new WorkflowTriggerConfig(), createdAt, updatedAt);
+    }
+
+    public Workflow(String id, String userId, String name, String description, WorkflowStatus status,
+                    List<WorkflowNode> nodes, List<WorkflowEdge> edges,
+                    WorkflowTriggerType triggerType, WorkflowTriggerConfig triggerConfig,
+                    Instant createdAt, Instant updatedAt) {
         this.id = id;
         this.userId = userId;
         this.name = name;
@@ -43,12 +55,20 @@ public class Workflow {
         this.status = status;
         this.nodes = nodes != null ? new ArrayList<>(nodes) : new ArrayList<>();
         this.edges = edges != null ? new ArrayList<>(edges) : new ArrayList<>();
+        this.triggerType = triggerType != null ? triggerType : WorkflowTriggerType.MANUAL;
+        this.triggerConfig = triggerConfig != null ? triggerConfig : new WorkflowTriggerConfig();
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
     }
 
     public static Workflow create(String userId, String name, String description, WorkflowStatus status,
                                   List<WorkflowNode> nodes, List<WorkflowEdge> edges) {
+        return create(userId, name, description, status, nodes, edges, WorkflowTriggerType.MANUAL, new WorkflowTriggerConfig());
+    }
+
+    public static Workflow create(String userId, String name, String description, WorkflowStatus status,
+                                  List<WorkflowNode> nodes, List<WorkflowEdge> edges,
+                                  WorkflowTriggerType triggerType, WorkflowTriggerConfig triggerConfig) {
         Instant now = Instant.now();
         return new Workflow(
                 null,
@@ -58,6 +78,8 @@ public class Workflow {
                 status != null ? status : WorkflowStatus.DRAFT,
                 nodes != null ? new ArrayList<>(nodes) : new ArrayList<>(),
                 edges != null ? new ArrayList<>(edges) : new ArrayList<>(),
+                triggerType != null ? triggerType : WorkflowTriggerType.MANUAL,
+                triggerConfig != null ? triggerConfig : new WorkflowTriggerConfig(),
                 now,
                 now
         );
@@ -117,6 +139,25 @@ public class Workflow {
 
     public void setEdges(List<WorkflowEdge> edges) {
         this.edges = edges != null ? new ArrayList<>(edges) : new ArrayList<>();
+    }
+
+    public WorkflowTriggerType getTriggerType() {
+        return triggerType != null ? triggerType : WorkflowTriggerType.MANUAL;
+    }
+
+    public void setTriggerType(WorkflowTriggerType triggerType) {
+        this.triggerType = triggerType != null ? triggerType : WorkflowTriggerType.MANUAL;
+    }
+
+    public WorkflowTriggerConfig getTriggerConfig() {
+        if (triggerConfig == null) {
+            triggerConfig = new WorkflowTriggerConfig();
+        }
+        return triggerConfig;
+    }
+
+    public void setTriggerConfig(WorkflowTriggerConfig triggerConfig) {
+        this.triggerConfig = triggerConfig != null ? triggerConfig : new WorkflowTriggerConfig();
     }
 
     public Instant getCreatedAt() {

@@ -222,6 +222,20 @@ export const ExecutionHistoryPanel: React.FC<ExecutionHistoryPanelProps> = ({
                     <span className="text-[11px] font-mono text-slate-400">
                       {formatDuration(item.durationMs)}
                     </span>
+
+                    {item.triggerType && (
+                      <span
+                        className={`text-[9px] font-mono px-1 py-0.2 rounded border uppercase font-medium ${
+                          item.triggerType.toUpperCase() === 'SCHEDULE'
+                            ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                            : item.triggerType.toUpperCase() === 'WEBHOOK'
+                            ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                            : 'bg-sky-500/10 text-sky-300 border-sky-500/30'
+                        }`}
+                      >
+                        {item.triggerType}
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
