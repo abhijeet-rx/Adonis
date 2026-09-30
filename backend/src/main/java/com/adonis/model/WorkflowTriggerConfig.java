@@ -38,12 +38,48 @@ public class WorkflowTriggerConfig {
     }
 
     /**
-     * Generates a cryptographically strong unguessable webhook capability path.
+     * Generates a cryptographically strong unguessable webhook capability path
+     * with 256 bits of entropy (32 random bytes -> 64 hexadecimal characters).
      */
     public static String generateWebhookPath() {
-        byte[] randomBytes = new byte[16];
+        byte[] randomBytes = new byte[32];
         SECURE_RANDOM.nextBytes(randomBytes);
         return HexFormat.of().formatHex(randomBytes);
+    }
+
+    /**
+     * Clears all schedule-specific configuration and execution state.
+     */
+    public void clearScheduleConfig() {
+        this.cronExpression = null;
+        this.timezone = null;
+        this.nextFireTime = null;
+        this.lastScheduledFireTime = null;
+    }
+
+    /**
+     * Clears all webhook-specific configuration and credentials.
+     */
+    public void clearWebhookConfig() {
+        this.webhookPath = null;
+        this.secretHash = null;
+        this.hasSecret = false;
+    }
+
+    /**
+     * Clears both schedule and webhook configuration for manual trigger semantics.
+     */
+    public void clearAll() {
+        clearScheduleConfig();
+        clearWebhookConfig();
+    }
+
+    /**
+     * Resets transient schedule calculation state whenever cron expression or timezone changes.
+     */
+    public void resetScheduleState() {
+        this.nextFireTime = null;
+        this.lastScheduledFireTime = null;
     }
 
     /**

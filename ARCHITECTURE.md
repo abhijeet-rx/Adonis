@@ -431,3 +431,101 @@ backend/src/main/java/com/adonis/
 12. **Frontend Asynchronous Polling**:
     When the user runs a workflow, the API responds with `202 Accepted`. The UI displays `QUEUED` immediately, triggers an execution history refresh, and polls `/api/executions/{id}` every 1.5 seconds until terminal state (`SUCCESS` or `FAILED`), at which point polling stops cleanly.
 
+---
+
+## 10. Phase 8 & 8.1: Scheduling, Webhooks & Trigger Reliability Hardening Architecture
+
+Phase 8 and 8.1 introduce two production trigger producers (the centralized Cron Scheduler and the public Webhook API) while strictly preserving the asynchronous execution pipeline established in Phase 7:
+
+```text
+                  ┌────────────────────────┐
+                  │       Manual API       │
+                  │ (POST /workflows/... ) │
+                  └───────────┬────────────┘
+                              │
+                  ┌───────────▼────────────┐
+                  │    Adonis Scheduler    │
+                  │   (Centralized Cron)   │
+                  └───────────┬────────────┘
+                              │
+                  ┌───────────▼────────────┐
+                  │      Webhook API       │
+                  │ (POST /api/webhooks/ ) │
+                  └───────────┬────────────┘
+                              │
+                              ▼
+                  WorkflowExecutionService
+                   (status = QUEUED)
+                              │
+                              ▼
+                        Redis Streams
+                   (adonis:execution:stream)
+                              │
+                              ▼
+                       ExecutionWorker
+                   (findAndModify lease)
+                              │
+                              ▼
+                  WorkflowExecutionEngine
+                   (Kahn's topo sort + retry)
+                              │
+                              ▼
+                           MongoDB
+```
+
+### 10.1 Webhook Reliability & Security Hardening
+
+1. **256-Bit Entropy Capability URLs**:
+   Workflows are assigned a 64-character cryptographically secure hex identifier (`/api/webhooks/{webhookPath}`) generated via `SecureRandom` (32 bytes = 256 bits of entropy). Predictable sequential IDs and MongoDB ObjectIds are never exposed as public trigger paths, eliminating enumeration attacks.
+2. **MongoDB Partial Unique Index**:
+   Webhook paths are protected at the database level by a partial unique index on the `workflows` collection:
+   ```json
+   {
+     "name": "wf_webhook_path_idx",
+     "keys": { "triggerConfig.webhookPath": 1 },
+     "unique": true,
+     "partialFilter": { "triggerConfig.webhookPath": { "$type": "string" } }
+   }
+   ```
+   This ensures strict global uniqueness across all active webhook paths while allowing multiple workflows without webhooks (MANUAL, SCHEDULE) to exist without null-key collision.
+3. **Application Collision Handling & Concurrency**:
+   In addition to pre-save validation (`existsByTriggerConfigWebhookPath`), concurrent insert/update collisions that trigger MongoDB `DuplicateKeyException` are caught and cleanly translated to controlled HTTP 409 Conflict responses without leaking MongoDB internals.
+4. **Strict Path Validation**:
+   Capability paths (custom or generated) must match `^[a-zA-Z0-9_-]{8,128}$`. Path traversal characters (`..`), path separators (`/`, `\`), whitespace, and reserved URI prefixes (`admin`, `api`, `health`, `actuator`, `swagger`, `auth`, `users`, `workflows`, `executions`) are strictly rejected with HTTP 400.
+5. **Strict Trigger-Type Enforcement**:
+   Incoming webhook requests require `workflow.getTriggerType() == WorkflowTriggerType.WEBHOOK`. If a workflow previously had a webhook configured but its trigger type was switched to `MANUAL` or `SCHEDULE`, or if the workflow is in `DRAFT` status, the request is rejected with HTTP `404 Not Found`. This prevents stale trigger invocation and prevents leaking workflow existence.
+6. **Trigger Configuration Lifecycle Rules**:
+   Switching trigger types explicitly purges obsolete trigger configurations:
+   - `MANUAL`: Clears all cron, timezone, nextFireTime, lastScheduledFireTime, webhookPath, secretHash, and hasSecret fields.
+   - `SCHEDULE`: Retains cron and timezone, resets fire times on schedule change, and purges all webhook-specific configuration.
+   - `WEBHOOK`: Retains webhookPath and secret configuration, and purges all schedule-specific configuration.
+7. **Constant-Time Secret Verification**:
+   Optional webhook secrets provided via `X-Webhook-Secret` or `X-Adonis-Secret` are verified using constant-time digest comparison (`MessageDigest.isEqual`) on SHA-256 digests. Plaintext secrets are never stored, logged, or returned in API responses.
+8. **Bounded Idempotency-Key & Transient Queue Recovery**:
+   The `Idempotency-Key` header is bounded to a maximum of 256 characters (HTTP 400 on breach). If Redis enqueueing fails on the initial request, the execution is marked `FAILED` with sanitized error messaging. Subsequent webhook deliveries with the same `Idempotency-Key` detect the failed queue submission and re-attempt Redis enqueueing (`markRequeued()`) upon infrastructure recovery, ensuring idempotency keys are not permanently burned by transient transport outages while guaranteeing at most one execution is created.
+
+### 10.2 Scheduler Reliability & Concurrency Hardening
+
+1. **Schedule Invalidation & Recalculation**:
+   Whenever a workflow's `cronExpression` or `timezone` changes (or when trigger type transitions to `SCHEDULE`), stored `nextFireTime` and `lastScheduledFireTime` are reset to `null`. On the subsequent scheduler cycle, the next valid occurrence is recalculated from the new schedule, eliminating stale execution times.
+2. **Pure `DO_NOT_CATCH_UP` Misfire Policy**:
+   If the backend is down during a scheduled window, missed historical occurrences prior to application startup are discarded without execution. The scheduler jumps directly to the next valid occurrence after `now()`, preventing catastrophic execution storms and database connection exhaustion following downtime.
+3. **Race-Free Atomic Scheduler Updates**:
+   The scheduler updates `nextFireTime` and `lastScheduledFireTime` using targeted atomic `MongoTemplate.updateFirst` operations (`Query.query(Criteria.where("_id").is(workflow.getId()))`, `Update.update("triggerConfig.nextFireTime", nextFire)`). The scheduler never calls `workflowRepository.save(workflow)` for fire-time bookkeeping, preventing concurrent user canvas edits (nodes, edges, descriptions) from being overwritten by background scheduler ticks.
+4. **Durable Multi-Instance Deduplication**:
+   Distributed scheduler instances coordinate via the `scheduled_occurrences` collection with a compound unique index on `(workflowId, scheduledFireTime)`. Before enqueuing to Redis Streams, the scheduler atomically attempts an insert. If a duplicate key error occurs, the occurrence has already been claimed by another node and is silently skipped.
+5. **Scheduled Occurrence Cleanup on Workflow Deletion**:
+   Deleting a workflow cascades to delete all associated `ScheduledOccurrence` records in MongoDB, preventing orphan records from accumulating over time.
+6. **Thread Model & Scalability**:
+   The scheduler uses a single background evaluation thread configured via Spring scheduling. It never executes workflows synchronously, but solely evaluates due workflows, claims occurrences in MongoDB, creates `QUEUED` execution records, and dispatches minimal `ExecutionJob` payloads to Redis Streams for consumption by the worker pool.
+
+### 10.3 Security Guarantees & Known Limitations
+
+- **Security Guarantees**:
+  - Deep redaction via `SecretRedactor` of sensitive headers (`Authorization`, `Cookie`, `X-Webhook-Secret`, etc.), API keys, bearer tokens, and credentials in trigger payloads.
+  - Constant-time secret comparison preventing side-channel timing attacks.
+  - Bounded request body size (default 1MB, returning HTTP 413) and bounded idempotency key length (max 256 chars, returning HTTP 400).
+- **Known Limitations**:
+  - Downtime occurrences are skipped under `DO_NOT_CATCH_UP`; workflows requiring backfilled catch-up processing must be triggered manually.
+  - SSRF protections for outgoing HTTP requests remain bounded by the private deployment perimeter; full private IP range blocking is scheduled for Phase 12.
+

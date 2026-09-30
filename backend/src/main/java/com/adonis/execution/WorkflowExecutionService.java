@@ -177,8 +177,14 @@ public class WorkflowExecutionService {
             Optional<WorkflowExecution> existingOpt = executionRepository.findByWorkflowIdAndIdempotencyKey(workflow.getId(), safeKey);
             if (existingOpt.isPresent()) {
                 WorkflowExecution existing = existingOpt.get();
-                log.info("Duplicate webhook idempotency key ignored: workflowId={}, idempotencyKey={}, executionId={}",
-                        workflow.getId(), safeKey, existing.getId());
+                // Fix #6: If previous queue submission failed (transient infrastructure failure before starting), retry enqueue
+                if (existing.getStatus() == ExecutionStatus.FAILED && existing.getStartedAt() == null) {
+                    log.info("Retrying transient queue submission failure for idempotencyKey={}, executionId={}",
+                            safeKey, existing.getId());
+                    return retryWebhookQueueSubmission(existing, workflow, safeKey);
+                }
+                log.info("Duplicate webhook idempotency key ignored: workflowId={}, idempotencyKey={}, executionId={}, status={}",
+                        workflow.getId(), safeKey, existing.getId(), existing.getStatus());
                 return new ExecuteWorkflowResponse(existing.getId(), workflow.getId(), existing.getStatus());
             }
         }
@@ -197,6 +203,9 @@ public class WorkflowExecutionService {
                 Optional<WorkflowExecution> existingOpt = executionRepository.findByWorkflowIdAndIdempotencyKey(workflow.getId(), safeKey);
                 if (existingOpt.isPresent()) {
                     WorkflowExecution existing = existingOpt.get();
+                    if (existing.getStatus() == ExecutionStatus.FAILED && existing.getStartedAt() == null) {
+                        return retryWebhookQueueSubmission(existing, workflow, safeKey);
+                    }
                     log.info("Concurrent duplicate webhook idempotency key caught: workflowId={}, idempotencyKey={}, executionId={}",
                             workflow.getId(), safeKey, existing.getId());
                     return new ExecuteWorkflowResponse(existing.getId(), workflow.getId(), existing.getStatus());
@@ -223,6 +232,39 @@ public class WorkflowExecutionService {
             log.error("Failed to enqueue webhook job for executionId: {}", executionId, ex);
             execution.markQueueFailed("Failed to queue webhook execution");
             executionRepository.save(execution);
+            throw new QueueSubmissionException("Failed to enqueue webhook execution", ex);
+        }
+
+        return ExecuteWorkflowResponse.queued(executionId, workflow.getId());
+    }
+
+    private ExecuteWorkflowResponse retryWebhookQueueSubmission(
+            WorkflowExecution existing,
+            Workflow workflow,
+            String safeKey) {
+        validator.validateAndOrder(workflow);
+        String triggerType = WorkflowTriggerType.WEBHOOK.name();
+
+        existing.markRequeued();
+        existing = executionRepository.save(existing);
+        String executionId = existing.getId();
+
+        if (executionQueue == null) {
+            log.error("ExecutionQueue is not configured; cannot retry webhook execution: {}", executionId);
+            existing.markQueueFailed("Execution queue service is unavailable");
+            executionRepository.save(existing);
+            throw new QueueSubmissionException("Execution queue is not configured");
+        }
+
+        ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), workflow.getUserId(), triggerType, Instant.now());
+        try {
+            executionQueue.enqueue(job);
+            log.info("Webhook execution re-enqueued successfully: executionId={}, workflowId={}, idempotencyKey={}",
+                    executionId, workflow.getId(), safeKey);
+        } catch (Exception ex) {
+            log.error("Failed to re-enqueue webhook job for executionId: {}", executionId, ex);
+            existing.markQueueFailed("Failed to queue webhook execution");
+            executionRepository.save(existing);
             throw new QueueSubmissionException("Failed to enqueue webhook execution", ex);
         }
 

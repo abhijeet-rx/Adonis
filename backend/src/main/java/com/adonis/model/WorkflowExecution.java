@@ -178,6 +178,21 @@ public class WorkflowExecution {
         this.leaseUntil = null;
     }
 
+    /**
+     * Resets execution state to QUEUED to retry a transient queue submission failure
+     * without creating duplicate execution documents for the same idempotency key.
+     */
+    public void markRequeued() {
+        this.status = ExecutionStatus.QUEUED;
+        this.queuedAt = Instant.now();
+        this.startedAt = null;
+        this.completedAt = null;
+        this.durationMs = null;
+        this.error = null;
+        this.leaseUntil = null;
+        this.workerId = null;
+    }
+
     public void markSuccess(Instant completedAt, List<NodeExecution> nodes) {
         this.status = ExecutionStatus.SUCCESS;
         this.completedAt = completedAt != null ? completedAt : Instant.now();

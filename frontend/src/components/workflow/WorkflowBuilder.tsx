@@ -757,11 +757,20 @@ const WorkflowBuilderCanvas: React.FC<WorkflowBuilderProps> = ({
             onClose={() => setSelectedNodeId(null)}
             onUpdateWorkflowTrigger={(type, config) => {
               setWorkflowTriggerType(type);
-              setWorkflowTriggerConfig((prev) => ({
-                ...prev,
-                cronExpression: config.cronExpression,
-                timezone: config.timezone
-              }));
+              if (type === 'SCHEDULE') {
+                setWorkflowTriggerConfig({
+                  cronExpression: config.cronExpression,
+                  timezone: config.timezone
+                });
+              } else if (type === 'WEBHOOK') {
+                setWorkflowTriggerConfig((prev) => ({
+                  webhookPath: prev?.webhookPath,
+                  secretMasked: prev?.secretMasked,
+                  secretConfigured: prev?.secretConfigured
+                }));
+              } else {
+                setWorkflowTriggerConfig({});
+              }
               setIsDirty(true);
             }}
             onWorkflowUpdated={(updated) => {

@@ -115,4 +115,91 @@ class WorkflowTriggerValidatorTest {
 
         assertThrows(WorkflowValidationException.class, () -> validator.validateTriggerConfig(workflow));
     }
+
+    // ==========================================
+    // Phase 8.1 FIX #10 — Webhook Path Validation Tests
+    // ==========================================
+
+    @Test
+    void validateWebhookConfig_OversizedPath_ThrowsValidationException() {
+        String longPath = "a".repeat(129);
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig(null, null, longPath, null, false);
+        Workflow workflow = Workflow.create("user-1", "WF", null, WorkflowStatus.ACTIVE, List.of(), List.of(), WorkflowTriggerType.WEBHOOK, config);
+
+        WorkflowValidationException ex = assertThrows(WorkflowValidationException.class, () -> validator.validateTriggerConfig(workflow));
+        assertTrue(ex.getMessage().contains("must not exceed 128 characters"));
+    }
+
+    @Test
+    void validateWebhookConfig_PathTraversal_ThrowsValidationException() {
+        List<String> traversalPaths = List.of(
+                "../admin-path",
+                "valid/path-here",
+                "valid\\path-here",
+                "..",
+                "path/../traversal"
+        );
+
+        for (String path : traversalPaths) {
+            WorkflowTriggerConfig config = new WorkflowTriggerConfig(null, null, path, null, false);
+            Workflow workflow = Workflow.create("user-1", "WF", null, WorkflowStatus.ACTIVE, List.of(), List.of(), WorkflowTriggerType.WEBHOOK, config);
+
+            assertThrows(WorkflowValidationException.class, () -> validator.validateTriggerConfig(workflow),
+                    "Should reject path traversal: " + path);
+        }
+    }
+
+    @Test
+    void validateWebhookConfig_WhitespaceAndSpecialCharacters_ThrowsValidationException() {
+        List<String> invalidPaths = List.of(
+                "path with space",
+                "path\twith\ttab",
+                "path?query=1",
+                "path#fragment",
+                "path@domain",
+                "path%20encoded",
+                "path$dollar"
+        );
+
+        for (String path : invalidPaths) {
+            WorkflowTriggerConfig config = new WorkflowTriggerConfig(null, null, path, null, false);
+            Workflow workflow = Workflow.create("user-1", "WF", null, WorkflowStatus.ACTIVE, List.of(), List.of(), WorkflowTriggerType.WEBHOOK, config);
+
+            assertThrows(WorkflowValidationException.class, () -> validator.validateTriggerConfig(workflow),
+                    "Should reject invalid characters in path: " + path);
+        }
+    }
+
+    @Test
+    void validateWebhookConfig_ReservedPaths_ThrowsValidationException() {
+        List<String> reserved = List.of("admin", "api", "health", "metrics", "actuator", "swagger", "auth");
+
+        for (String res : reserved) {
+            WorkflowTriggerConfig config = new WorkflowTriggerConfig(null, null, res + "-suffix", null, false); // "-suffix" is not reserved
+            WorkflowTriggerConfig exactConfig = new WorkflowTriggerConfig(null, null, "admin123", null, false);
+
+            WorkflowTriggerConfig reservedConfig = new WorkflowTriggerConfig(null, null, res, null, false);
+            Workflow workflow = Workflow.create("user-1", "WF", null, WorkflowStatus.ACTIVE, List.of(), List.of(), WorkflowTriggerType.WEBHOOK, reservedConfig);
+
+            assertThrows(WorkflowValidationException.class, () -> validator.validateTriggerConfig(workflow),
+                    "Should reject reserved path: " + res);
+        }
+    }
+
+    @Test
+    void validateWebhookConfig_ValidCustomAndGeneratedPaths_Succeeds() {
+        List<String> validPaths = List.of(
+                "my_custom_webhook-1",
+                "order_created_2026",
+                "stripe-events-listener",
+                WorkflowTriggerConfig.generateWebhookPath()
+        );
+
+        for (String path : validPaths) {
+            WorkflowTriggerConfig config = new WorkflowTriggerConfig(null, null, path, null, false);
+            Workflow workflow = Workflow.create("user-1", "WF", null, WorkflowStatus.ACTIVE, List.of(), List.of(), WorkflowTriggerType.WEBHOOK, config);
+
+            assertDoesNotThrow(() -> validator.validateTriggerConfig(workflow), "Should accept valid path: " + path);
+        }
+    }
 }

@@ -61,6 +61,12 @@ public class WebhookController {
         Workflow workflow = workflowRepository.findByTriggerConfigWebhookPath(webhookPath.trim())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Webhook not found"));
 
+        // Fix #2: Reject if workflow does not have WEBHOOK trigger type
+        if (workflow.getTriggerType() != com.adonis.model.WorkflowTriggerType.WEBHOOK) {
+            log.warn("Invalid webhook rejected: workflow {} has non-WEBHOOK triggerType={}", workflow.getId(), workflow.getTriggerType());
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Webhook not found");
+        }
+
         // 2. Verify workflow is active
         if (workflow.getStatus() != WorkflowStatus.ACTIVE) {
             log.warn("Invalid webhook rejected: workflow {} is not active (status={})", workflow.getId(), workflow.getStatus());
@@ -105,10 +111,20 @@ public class WebhookController {
         triggerPayload.put("query", sanitizedQueryParams);
         triggerPayload.put("body", parsedBody);
 
-        // 6. Handle optional Idempotency-Key header
+        // 6. Handle optional Idempotency-Key header (Fix #7: limit size to 256)
         String idempotencyKey = request.getHeader("Idempotency-Key");
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             idempotencyKey = request.getHeader("X-Idempotency-Key");
+        }
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            idempotencyKey = idempotencyKey.trim();
+            if (idempotencyKey.length() > 256) {
+                log.warn("Webhook rejected: idempotency key exceeds 256 characters (len={}) for workflowId={}",
+                        idempotencyKey.length(), workflow.getId());
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency key exceeds maximum length of 256 characters");
+            }
+        } else {
+            idempotencyKey = null;
         }
 
         // 7. Enqueue execution through existing Redis pipeline

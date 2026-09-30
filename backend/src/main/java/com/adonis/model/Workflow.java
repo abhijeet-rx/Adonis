@@ -1,6 +1,8 @@
 package com.adonis.model;
 
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
@@ -9,6 +11,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Document(collection = "workflows")
+@CompoundIndexes({
+        @CompoundIndex(
+                name = "wf_webhook_path_idx",
+                def = "{'triggerConfig.webhookPath': 1}",
+                unique = true,
+                partialFilter = "{'triggerConfig.webhookPath': {'$exists': true, '$type': 'string', '$ne': null}}"
+        )
+})
 public class Workflow {
 
     @Id

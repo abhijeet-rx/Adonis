@@ -249,4 +249,104 @@ class WebhookControllerTest {
                 .andExpect(jsonPath("$.executionId").value("exec-already-ran"))
                 .andExpect(jsonPath("$.status").value("SUCCESS"));
     }
+
+    // ==========================================
+    // Phase 8.1 FIX #2 — Require WEBHOOK Trigger Type
+    // ==========================================
+
+    @Test
+    void handleWebhook_ManualWorkflowWithStaleWebhookPath_Returns404NotFound() throws Exception {
+        Workflow manualWorkflow = new Workflow(
+                "wf-manual-stale",
+                "user-1",
+                "Manual Workflow with Stale Path",
+                null,
+                WorkflowStatus.ACTIVE,
+                List.of(),
+                List.of(),
+                WorkflowTriggerType.MANUAL,
+                new WorkflowTriggerConfig(null, null, "stale-manual-path", null, false),
+                Instant.now(),
+                Instant.now()
+        );
+
+        when(workflowRepository.findByTriggerConfigWebhookPath("stale-manual-path"))
+                .thenReturn(Optional.of(manualWorkflow));
+
+        mockMvc.perform(post("/api/webhooks/stale-manual-path")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isNotFound());
+
+        verifyNoInteractions(executionService);
+    }
+
+    @Test
+    void handleWebhook_ScheduleWorkflowWithStaleWebhookPath_Returns404NotFound() throws Exception {
+        Workflow scheduleWorkflow = new Workflow(
+                "wf-sched-stale",
+                "user-1",
+                "Schedule Workflow with Stale Path",
+                null,
+                WorkflowStatus.ACTIVE,
+                List.of(),
+                List.of(),
+                WorkflowTriggerType.SCHEDULE,
+                new WorkflowTriggerConfig("0 */5 * * * *", "UTC", "stale-sched-path", null, false),
+                Instant.now(),
+                Instant.now()
+        );
+
+        when(workflowRepository.findByTriggerConfigWebhookPath("stale-sched-path"))
+                .thenReturn(Optional.of(scheduleWorkflow));
+
+        mockMvc.perform(post("/api/webhooks/stale-sched-path")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isNotFound());
+
+        verifyNoInteractions(executionService);
+    }
+
+    // ==========================================
+    // Phase 8.1 FIX #7 — Limit Idempotency Key Size
+    // ==========================================
+
+    @Test
+    void handleWebhook_OversizedIdempotencyKey_Returns400BadRequest() throws Exception {
+        when(workflowRepository.findByTriggerConfigWebhookPath(webhookPath))
+                .thenReturn(Optional.of(activeWebhookWorkflow));
+
+        String oversizedKey = "k".repeat(257);
+
+        mockMvc.perform(post("/api/webhooks/{webhookPath}", webhookPath)
+                        .header("X-Webhook-Secret", validSecret)
+                        .header("Idempotency-Key", oversizedKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"event\":\"test\"}"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(executionService);
+    }
+
+    @Test
+    void handleWebhook_Valid256CharIdempotencyKey_Accepted() throws Exception {
+        when(workflowRepository.findByTriggerConfigWebhookPath(webhookPath))
+                .thenReturn(Optional.of(activeWebhookWorkflow));
+
+        String valid256Key = "k".repeat(256);
+        ExecuteWorkflowResponse queuedResponse = ExecuteWorkflowResponse.queued("exec-key-256", "wf-wh-1");
+        when(executionService.enqueueWebhookExecution(eq(activeWebhookWorkflow), eq(valid256Key), any()))
+                .thenReturn(queuedResponse);
+
+        mockMvc.perform(post("/api/webhooks/{webhookPath}", webhookPath)
+                        .header("X-Webhook-Secret", validSecret)
+                        .header("Idempotency-Key", valid256Key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"event\":\"test\"}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.executionId").value("exec-key-256"));
+
+        verify(executionService).enqueueWebhookExecution(eq(activeWebhookWorkflow), eq(valid256Key), any());
+    }
 }

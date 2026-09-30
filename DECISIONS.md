@@ -412,6 +412,49 @@ This document records the architectural and technical decisions made during the 
   - Positive: Consistent execution semantics across all trigger types; durable duplicate protection across multiple backend instances; resilient downtime recovery; zero leakage of sensitive secrets; immune to timing attacks; unifies manual, scheduled, and webhook flows in execution history and visual builder.
   - Trade-off: Missed scheduled runs during downtime are discarded rather than backfilled, requiring manual execution if historical batch processing is desired.
 
+---
+
+## ADR-023: Phase 8.1 — Trigger Reliability & Security Hardening
+
+* **Status**: Accepted
+* **Date**: 2026-09-30
+* **Context**:
+  Phase 8 introduced scheduling and webhook triggers into the existing asynchronous worker pipeline. Subsequent reliability audits identified several critical edge cases:
+  1. *Webhook Path Collisions*: Webhook capability paths lacked a database-level uniqueness guarantee, allowing potential duplicate path resolution bugs.
+  2. *Stale Trigger Type Invocations*: Webhooks resolved workflows by path without checking that `workflow.triggerType == WEBHOOK`, enabling stale webhooks to execute workflows converted to MANUAL or SCHEDULE.
+  3. *Stale Configuration Leaks*: Switching trigger types left residual configuration (e.g. cron expressions remaining on webhook workflows or secrets on manual workflows).
+  4. *Schedule Modification Desynchronization*: Changing cron expressions or timezones did not invalidate stored `nextFireTime`, executing workflows at obsolete schedule intervals.
+  5. *Misfire Policy Ambiguity*: The scheduler configuration had a legacy misfire threshold that could trigger bounded catch-up rather than the documented `DO_NOT_CATCH_UP` policy.
+  6. *Idempotency Failure Locking*: Transient queue failures during initial webhook ingestion marked executions `FAILED`, permanently stranding the `Idempotency-Key` and preventing retry.
+  7. *Unbounded Headers*: `Idempotency-Key` lacked a length limit, posing storage and memory abuse vectors.
+  8. *Orphan Scheduled Occurrences*: Deleting a workflow left uncleaned `ScheduledOccurrence` documents in MongoDB.
+  9. *Webhook Capability Entropy & Path Validation*: Webhook capability path generation required 256 bits of entropy (64 hex characters) and strict rejection of path traversals, delimiters, and reserved words.
+  10. *Scheduler Save Race*: The scheduler persisted `nextFireTime` using `workflowRepository.save(workflow)`, creating race conditions that could overwrite concurrent user edits to nodes, edges, or metadata.
+* **Decision**:
+  - **MongoDB Partial Unique Index**:
+    Created `wf_webhook_path_idx` on `triggerConfig.webhookPath` with partial filter `{'triggerConfig.webhookPath': {$type: 'string'}}`. Application catches `DuplicateKeyException` and returns a clean 409 Conflict without leaking database internals.
+  - **Strict Trigger-Type Enforcement**:
+    `WebhookController` enforces `workflow.getTriggerType() == WorkflowTriggerType.WEBHOOK`. Any non-matching or draft workflow returns HTTP `404 Not Found` without disclosing workflow metadata.
+  - **Trigger Configuration Lifecycle Rules**:
+    `WorkflowService` cleans obsolete fields on trigger type transitions: MANUAL cleans all trigger specifics; SCHEDULE cleans webhook parameters; WEBHOOK cleans cron and timezone parameters.
+  - **Schedule Invalidation**:
+    Modifying `cronExpression` or `timezone` resets `nextFireTime` and `lastScheduledFireTime` to `null`, forcing the scheduler to compute a fresh occurrence from the updated schedule.
+  - **Pure `DO_NOT_CATCH_UP` Misfire Policy**:
+    Eliminated all catch-up thresholds. Occurrences scheduled prior to application startup are discarded; the scheduler advances directly to the next valid occurrence after `now()`, preventing execution storms after downtime.
+  - **Idempotency Queue Recovery**:
+    If Redis queueing fails initially, subsequent webhook deliveries with the same `Idempotency-Key` safely re-attempt Redis submission via `markRequeued()` rather than returning a permanently failed execution or creating duplicate executions.
+  - **Bounded Idempotency-Key**:
+    `Idempotency-Key` is strictly capped at 256 characters; oversized keys are rejected with HTTP 400.
+  - **Cascade Occurrence Cleanup**:
+    Deleting a workflow cascade-deletes all associated `ScheduledOccurrence` records from MongoDB.
+  - **64-Character Hex Capability Paths & Strict Validation**:
+    Generated paths use 32 bytes of cryptographic randomness (64 hex characters, 256 bits of entropy). Custom and generated paths are validated against `^[a-zA-Z0-9_-]{8,128}$`, rejecting path traversals, slashes, whitespace, and reserved URI prefixes.
+  - **Race-Free Targeted Scheduler Updates**:
+    The scheduler uses atomic `MongoTemplate.updateFirst` queries to update only `triggerConfig.nextFireTime` and `triggerConfig.lastScheduledFireTime`, guaranteeing that background scheduler ticks never overwrite user modifications to workflow canvas structures or properties.
+* **Consequences**:
+  - Positive: Guarantees strict trigger consistency and database integrity; eliminates race conditions between users and the scheduler; prevents stale trigger executions; ensures reliable idempotency recovery across infrastructure hiccups; hardens webhook paths against enumeration and injection attacks.
+  - Trade-off: Workflows with misconfigured paths or oversized idempotency keys are strictly rejected with 4xx errors; downtime occurrences are discarded without backfill.
+
 
 
 

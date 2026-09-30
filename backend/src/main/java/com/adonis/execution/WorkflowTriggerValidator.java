@@ -58,6 +58,15 @@ public class WorkflowTriggerValidator {
         parseAndValidateZoneId(config.getTimezone());
     }
 
+    private static final java.util.regex.Pattern VALID_WEBHOOK_PATH_PATTERN =
+            java.util.regex.Pattern.compile("^[a-zA-Z0-9_-]{8,128}$");
+
+    private static final java.util.Set<String> RESERVED_WEBHOOK_PATHS = java.util.Set.of(
+            "admin", "api", "health", "metrics", "webhook", "webhooks", "actuator",
+            "swagger", "auth", "login", "register", "system", "internal", "occurrences",
+            "executions", "workflows", "users", "status"
+    );
+
     public void validateWebhookConfig(WorkflowTriggerConfig config) {
         if (config == null) {
             throw new WorkflowValidationException("Webhook trigger configuration must not be null");
@@ -71,6 +80,21 @@ public class WorkflowTriggerValidator {
         String trimmed = path.trim();
         if (trimmed.length() < 8) {
             throw new WorkflowValidationException("Webhook path must be at least 8 characters for security");
+        }
+        if (trimmed.length() > 128) {
+            throw new WorkflowValidationException("Webhook path must not exceed 128 characters");
+        }
+
+        if (trimmed.contains("/") || trimmed.contains("\\") || trimmed.contains("..")) {
+            throw new WorkflowValidationException("Webhook path must not contain path traversal characters");
+        }
+
+        if (!VALID_WEBHOOK_PATH_PATTERN.matcher(trimmed).matches()) {
+            throw new WorkflowValidationException("Webhook path contains invalid characters. Only alphanumeric, hyphen, and underscore characters are allowed");
+        }
+
+        if (RESERVED_WEBHOOK_PATHS.contains(trimmed.toLowerCase(java.util.Locale.ROOT))) {
+            throw new WorkflowValidationException("Webhook path '" + trimmed + "' is a reserved path and cannot be used");
         }
     }
 

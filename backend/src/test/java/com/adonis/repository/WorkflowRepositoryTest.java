@@ -13,7 +13,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.data.mongo.DataMongoTest;
-import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -51,9 +50,6 @@ class WorkflowRepositoryTest {
 
     @Autowired
     private WorkflowRepository workflowRepository;
-
-    @Autowired
-    private MongoTemplate mongoTemplate;
 
     @BeforeEach
     void setUp() {
@@ -184,5 +180,33 @@ class WorkflowRepositoryTest {
 
         // Workflow is now deleted
         assertTrue(workflowRepository.findById(wf.getId()).isEmpty());
+    }
+
+    @Test
+    void shouldFindWorkflowByWebhookPathAndCheckExistence() {
+        Workflow wf = Workflow.create("user-1", "Webhook WF", "Desc", WorkflowStatus.ACTIVE, List.of(), List.of());
+        wf.setTriggerType(com.adonis.model.WorkflowTriggerType.WEBHOOK);
+        com.adonis.model.WorkflowTriggerConfig config = new com.adonis.model.WorkflowTriggerConfig();
+        config.setWebhookPath("wh-test-path-12345678");
+        wf.setTriggerConfig(config);
+        workflowRepository.save(wf);
+
+        assertTrue(workflowRepository.existsByTriggerConfigWebhookPath("wh-test-path-12345678"));
+        assertFalse(workflowRepository.existsByTriggerConfigWebhookPath("wh-nonexistent-path"));
+
+        Optional<Workflow> found = workflowRepository.findByTriggerConfigWebhookPath("wh-test-path-12345678");
+        assertTrue(found.isPresent());
+        assertEquals(wf.getId(), found.get().getId());
+    }
+
+    @Test
+    void shouldAllowMultipleWorkflowsWithoutWebhookPath() {
+        Workflow wf1 = Workflow.create("user-1", "WF 1", "Desc", WorkflowStatus.ACTIVE, List.of(), List.of());
+        Workflow wf2 = Workflow.create("user-2", "WF 2", "Desc", WorkflowStatus.ACTIVE, List.of(), List.of());
+
+        assertDoesNotThrow(() -> {
+            workflowRepository.save(wf1);
+            workflowRepository.save(wf2);
+        });
     }
 }

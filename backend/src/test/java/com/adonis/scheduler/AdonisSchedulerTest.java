@@ -8,14 +8,15 @@ import com.adonis.repository.WorkflowRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -45,9 +46,10 @@ class AdonisSchedulerTest {
                 workflowRepository,
                 executionService,
                 scheduledOccurrenceRepository,
-                mongoTemplate,
-                300000L // 5 minutes misfire threshold
+                mongoTemplate
         );
+        // Default startup time before test schedule points
+        scheduler.setStartupTime(Instant.parse("2026-10-01T10:00:00Z"));
     }
 
     @Test
@@ -80,7 +82,9 @@ class AdonisSchedulerTest {
         assertNotNull(config.getNextFireTime());
         // Next fire time for 10:01:00 with "0 */5 * * * *" is 10:05:00
         assertEquals(Instant.parse("2026-10-01T10:05:00Z"), config.getNextFireTime());
-        verify(workflowRepository).save(workflow);
+        // Fix #11: Targeted update instead of full save
+        verify(mongoTemplate).updateFirst(any(Query.class), any(Update.class), eq(Workflow.class));
+        verify(workflowRepository, never()).save(any());
         verifyNoInteractions(executionService);
     }
 
@@ -107,7 +111,7 @@ class AdonisSchedulerTest {
         Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
 
-        Instant now = Instant.parse("2026-10-01T10:05:02Z"); // 2s after scheduled time (within threshold)
+        Instant now = Instant.parse("2026-10-01T10:05:02Z");
 
         when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
                 .thenReturn(ExecuteWorkflowResponse.queued("exec-sched-1", "wf-1"));
@@ -123,7 +127,9 @@ class AdonisSchedulerTest {
         // Verify next fire time advanced to 10:10:00
         assertEquals(Instant.parse("2026-10-01T10:10:00Z"), config.getNextFireTime());
         assertEquals(scheduledTime, config.getLastScheduledFireTime());
-        verify(workflowRepository).save(workflow);
+        // Fix #11: Scheduler does NOT overwrite entire workflow
+        verify(workflowRepository, never()).save(any());
+        verify(mongoTemplate).updateFirst(any(Query.class), any(Update.class), eq(Workflow.class));
     }
 
     @Test
@@ -149,33 +155,186 @@ class AdonisSchedulerTest {
         assertEquals(Instant.parse("2026-10-01T10:10:00Z"), config.getNextFireTime());
     }
 
+    // ==========================================
+    // Phase 8.1 FIX #5 — Strict DO_NOT_CATCH_UP Downtime Tests
+    // ==========================================
+
     @Test
-    void processWorkflowSchedule_MisfirePolicy_DoNotCatchUp_AfterDowntime() {
-        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 0 * * * *", "UTC", null, null, false);
-        // Scheduled at 10:00:00, but application was down until 12:30:00 (gap > 5 minutes misfireThreshold)
-        Instant oldMissedTime = Instant.parse("2026-10-01T10:00:00Z");
-        config.setNextFireTime(oldMissedTime);
+    void processWorkflowSchedule_MisfirePolicy_DoNotCatchUp_BackendDown1Minute() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant missedScheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(missedScheduledTime);
 
         Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
 
-        Instant now = Instant.parse("2026-10-01T12:30:00Z"); // 2.5 hours downtime
+        // Backend was down and booted up 1 minute after scheduled time
+        Instant startupTime = Instant.parse("2026-10-01T10:06:00Z");
+        scheduler.setStartupTime(startupTime);
 
+        Instant now = Instant.parse("2026-10-01T10:06:05Z");
         boolean result = scheduler.processWorkflowSchedule(workflow, now);
 
-        // Under DO_NOT_CATCH_UP: must NOT execute the old 10:00:00 occurrence!
+        // DO_NOT_CATCH_UP: Must NOT fire missed occurrence
         assertFalse(result);
         verifyNoInteractions(executionService);
         verify(mongoTemplate, never()).insert(any(ScheduledOccurrence.class));
+        // Advances to next occurrence after now (10:10:00)
+        assertEquals(Instant.parse("2026-10-01T10:10:00Z"), config.getNextFireTime());
+    }
 
-        // Advances to the next valid occurrence from 12:30:00 (which is 13:00:00)
-        assertEquals(Instant.parse("2026-10-01T13:00:00Z"), config.getNextFireTime());
-        verify(workflowRepository).save(workflow);
+    @Test
+    void processWorkflowSchedule_MisfirePolicy_DoNotCatchUp_BackendDown5Minutes() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant missedScheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(missedScheduledTime);
+
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        // Backend booted up 5 minutes after scheduled time
+        scheduler.setStartupTime(Instant.parse("2026-10-01T10:10:00Z"));
+
+        Instant now = Instant.parse("2026-10-01T10:10:02Z");
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertFalse(result);
+        verifyNoInteractions(executionService);
+        // Advances to next occurrence after 10:10:02 (10:15:00)
+        assertEquals(Instant.parse("2026-10-01T10:15:00Z"), config.getNextFireTime());
+    }
+
+    @Test
+    void processWorkflowSchedule_MisfirePolicy_DoNotCatchUp_BackendDownSeveralHours() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 0 * * * *", "UTC", null, null, false);
+        Instant missedScheduledTime = Instant.parse("2026-10-01T10:00:00Z");
+        config.setNextFireTime(missedScheduledTime);
+
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        // 4 hours downtime
+        scheduler.setStartupTime(Instant.parse("2026-10-01T14:00:00Z"));
+
+        Instant now = Instant.parse("2026-10-01T14:05:00Z");
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertFalse(result);
+        verifyNoInteractions(executionService);
+        // Advances to next occurrence after 14:05:00 (15:00:00)
+        assertEquals(Instant.parse("2026-10-01T15:00:00Z"), config.getNextFireTime());
+    }
+
+    @Test
+    void processWorkflowSchedule_MisfirePolicy_DoNotCatchUp_BackendDownSeveralDays() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 0 9 * * *", "UTC", null, null, false);
+        Instant missedScheduledTime = Instant.parse("2026-10-01T09:00:00Z");
+        config.setNextFireTime(missedScheduledTime);
+
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        // 3 days downtime
+        scheduler.setStartupTime(Instant.parse("2026-10-04T12:00:00Z"));
+
+        Instant now = Instant.parse("2026-10-04T12:01:00Z");
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertFalse(result);
+        verifyNoInteractions(executionService);
+        // Advances to next valid 09:00 occurrence after now (2026-10-05T09:00:00Z)
+        assertEquals(Instant.parse("2026-10-05T09:00:00Z"), config.getNextFireTime());
+    }
+
+    @Test
+    void processWorkflowSchedule_RestartImmediatelyBeforeScheduledTime_FiresWhenDue() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 0 10 * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:00:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        // Restarted at 09:59:50 (10s before scheduled time)
+        scheduler.setStartupTime(Instant.parse("2026-10-01T09:59:50Z"));
+
+        Instant now = Instant.parse("2026-10-01T10:00:02Z");
+        when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
+                .thenReturn(ExecuteWorkflowResponse.queued("exec-1", "wf-1"));
+
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        // Fired because startup was BEFORE scheduled time!
+        assertTrue(result);
+        verify(executionService).enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime));
+    }
+
+    @Test
+    void processWorkflowSchedule_RestartImmediatelyAfterScheduledTime_SkipsOccurrence() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 0 10 * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:00:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        // Restarted at 10:00:05 (5s after scheduled time passed)
+        scheduler.setStartupTime(Instant.parse("2026-10-01T10:00:05Z"));
+
+        Instant now = Instant.parse("2026-10-01T10:00:10Z");
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        // Skipped because occurrence passed during downtime before startup
+        assertFalse(result);
+        verifyNoInteractions(executionService);
+    }
+
+    // ==========================================
+    // Phase 8.1 FIX #11 — Scheduler Save Race Concurrency Protection
+    // ==========================================
+
+    @Test
+    void processWorkflowSchedule_UsesTargetedMongoUpdates_NeverOverwritesUserEdits() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-race-1", "user-1", "User Defined Name", "User Defined Desc",
+                WorkflowStatus.ACTIVE, List.of(new WorkflowNode("node-1", "test", java.util.Map.of())),
+                List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:05:02Z");
+        when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
+                .thenReturn(ExecuteWorkflowResponse.queued("exec-race", "wf-race-1"));
+
+        scheduler.processWorkflowSchedule(workflow, now);
+
+        // Full workflow save must NEVER be called by scheduler
+        verify(workflowRepository, never()).save(any(Workflow.class));
+
+        // Targeted MongoDB update must be used
+        ArgumentCaptor<Query> queryCaptor = ArgumentCaptor.forClass(Query.class);
+        ArgumentCaptor<Update> updateCaptor = ArgumentCaptor.forClass(Update.class);
+        verify(mongoTemplate).updateFirst(queryCaptor.capture(), updateCaptor.capture(), eq(Workflow.class));
+
+        assertTrue(queryCaptor.getValue().getQueryObject().containsKey("_id"));
+        assertEquals("wf-race-1", queryCaptor.getValue().getQueryObject().get("_id"));
+
+        // Verify that only triggerConfig fields and updatedAt are targeted, not name/description/nodes
+        var updateObj = updateCaptor.getValue().getUpdateObject();
+        var setObj = (org.bson.Document) updateObj.get("$set");
+        assertNotNull(setObj);
+        assertTrue(setObj.containsKey("triggerConfig.nextFireTime"));
+        assertTrue(setObj.containsKey("triggerConfig.lastScheduledFireTime"));
+        assertTrue(setObj.containsKey("updatedAt"));
+        assertFalse(setObj.containsKey("name"), "Scheduler must never update workflow name");
+        assertFalse(setObj.containsKey("nodes"), "Scheduler must never update workflow nodes");
+        assertFalse(setObj.containsKey("edges"), "Scheduler must never update workflow edges");
+        assertFalse(setObj.containsKey("description"), "Scheduler must never update workflow description");
     }
 
     @Test
     void processWorkflowSchedule_TimezoneSupport_EvaluatesCorrectly() {
-        // Daily at 09:00 in Asia/Kolkata (UTC +05:30) -> 03:30:00 UTC
         WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 0 9 * * *", "Asia/Kolkata", null, null, false);
         Workflow workflow = new Workflow("wf-1", "user-1", "WF 1", null, WorkflowStatus.ACTIVE,
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
@@ -189,12 +348,10 @@ class AdonisSchedulerTest {
 
     @Test
     void checkAndRunSchedules_FailureIsolation_OneBrokenWorkflowDoesNotStopOthers() {
-        // Workflow 1: invalid cron
         WorkflowTriggerConfig config1 = new WorkflowTriggerConfig("invalid-cron", "UTC", null, null, false);
         Workflow wf1 = new Workflow("wf-bad", "user-1", "Bad WF", null, WorkflowStatus.ACTIVE,
                 List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config1, Instant.now(), Instant.now());
 
-        // Workflow 2: valid due workflow
         WorkflowTriggerConfig config2 = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
         Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
         config2.setNextFireTime(scheduledTime);
@@ -210,7 +367,6 @@ class AdonisSchedulerTest {
 
         int queuedCount = scheduler.checkAndRunSchedules(now);
 
-        // Good workflow was processed and queued despite bad workflow error!
         assertEquals(1, queuedCount);
         verify(executionService).enqueueScheduledExecution(eq(wf2), anyString(), eq(scheduledTime));
     }

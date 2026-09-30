@@ -13,16 +13,17 @@ import com.adonis.repository.WorkflowRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -37,7 +38,8 @@ import java.util.Objects;
  * 1. Idempotent scheduling with durable duplicate protection across multiple backend instances
  * 2. Strict misfire policy: DO_NOT_CATCH_UP (no stale replay after downtime)
  * 3. Failure isolation: errors in one workflow never halt the scheduler
- * 4. Configurable enable/disable
+ * 4. Safe concurrent updates: uses targeted MongoDB field updates rather than replacing entire workflow
+ * 5. Configurable enable/disable
  */
 @Component
 @EnableScheduling
@@ -50,20 +52,39 @@ public class AdonisScheduler {
     private final WorkflowExecutionService executionService;
     private final ScheduledOccurrenceRepository scheduledOccurrenceRepository;
     private final MongoTemplate mongoTemplate;
-    private final long misfireThresholdMs;
+    private Instant startupTime;
 
     @Autowired
     public AdonisScheduler(
             WorkflowRepository workflowRepository,
             WorkflowExecutionService executionService,
             ScheduledOccurrenceRepository scheduledOccurrenceRepository,
-            MongoTemplate mongoTemplate,
-            @Value("${adonis.scheduler.misfire-threshold-ms:300000}") long misfireThresholdMs) {
+            MongoTemplate mongoTemplate) {
         this.workflowRepository = Objects.requireNonNull(workflowRepository, "WorkflowRepository must not be null");
         this.executionService = Objects.requireNonNull(executionService, "WorkflowExecutionService must not be null");
         this.scheduledOccurrenceRepository = Objects.requireNonNull(scheduledOccurrenceRepository, "ScheduledOccurrenceRepository must not be null");
         this.mongoTemplate = Objects.requireNonNull(mongoTemplate, "MongoTemplate must not be null");
-        this.misfireThresholdMs = Math.max(1000, misfireThresholdMs);
+        this.startupTime = Instant.now();
+    }
+
+    /**
+     * Backward-compatible constructor for testing or configuration passing misfire threshold.
+     */
+    public AdonisScheduler(
+            WorkflowRepository workflowRepository,
+            WorkflowExecutionService executionService,
+            ScheduledOccurrenceRepository scheduledOccurrenceRepository,
+            MongoTemplate mongoTemplate,
+            long ignoredMisfireThresholdMs) {
+        this(workflowRepository, executionService, scheduledOccurrenceRepository, mongoTemplate);
+    }
+
+    public Instant getStartupTime() {
+        return startupTime;
+    }
+
+    public void setStartupTime(Instant startupTime) {
+        this.startupTime = startupTime != null ? startupTime : Instant.now();
     }
 
     /**
@@ -106,9 +127,10 @@ public class AdonisScheduler {
     /**
      * Processes a single scheduled workflow:
      * 1. Validates cron and timezone safely
-     * 2. Checks due time and misfire policy (DO_NOT_CATCH_UP)
-     * 3. Enforces durable duplicate occurrence protection
-     * 4. Enqueues execution via WorkflowExecutionService
+     * 2. Checks due time and strict misfire policy (DO_NOT_CATCH_UP across downtime)
+     * 3. Enforces durable duplicate occurrence protection via MongoDB unique index
+     * 4. Enqueues execution via WorkflowExecutionService into Redis Streams
+     * 5. Performs targeted field update in MongoDB to avoid race conditions with user edits
      */
     public boolean processWorkflowSchedule(Workflow workflow, Instant now) {
         if (workflow == null || workflow.getStatus() != WorkflowStatus.ACTIVE || workflow.getTriggerType() != WorkflowTriggerType.SCHEDULE) {
@@ -144,9 +166,10 @@ public class AdonisScheduler {
         if (nextDue == null) {
             ZonedDateTime nextZoned = cron.next(nowZoned);
             if (nextZoned != null) {
-                config.setNextFireTime(nextZoned.toInstant());
-                workflowRepository.save(workflow);
-                log.info("Initialized schedule for workflow {}: nextFireTime={}", workflow.getId(), config.getNextFireTime());
+                Instant calculatedNext = nextZoned.toInstant();
+                config.setNextFireTime(calculatedNext);
+                updateNextFireTime(workflow.getId(), calculatedNext);
+                log.info("Initialized schedule for workflow {}: nextFireTime={}", workflow.getId(), calculatedNext);
             }
             return false;
         }
@@ -156,14 +179,16 @@ public class AdonisScheduler {
             return false;
         }
 
-        // 3. Misfire policy check: DO_NOT_CATCH_UP
-        // If nextDue is older than misfire threshold, skip without firing and schedule next occurrence from now
-        if (Duration.between(nextDue, now).toMillis() > misfireThresholdMs) {
-            log.warn("Misfire detected for workflow {}: scheduled occurrence {} was missed due to downtime (gap {}ms). Policy=DO_NOT_CATCH_UP. Skipping to next occurrence.",
-                    workflow.getId(), nextDue, Duration.between(nextDue, now).toMillis());
+        // 3. Strict Misfire policy check: DO_NOT_CATCH_UP
+        // If nextDue occurred before application startup time, it was missed during downtime.
+        // Under DO_NOT_CATCH_UP, we NEVER replay missed downtime occurrences or storm the queue.
+        if (nextDue.isBefore(startupTime)) {
+            log.warn("Misfire detected for workflow {}: scheduled occurrence {} was missed during downtime (before startup {}). Policy=DO_NOT_CATCH_UP. Skipping to next occurrence after now.",
+                    workflow.getId(), nextDue, startupTime);
             ZonedDateTime nextZoned = cron.next(nowZoned);
-            config.setNextFireTime(nextZoned != null ? nextZoned.toInstant() : null);
-            workflowRepository.save(workflow);
+            Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
+            config.setNextFireTime(calculatedNext);
+            updateNextFireTime(workflow.getId(), calculatedNext);
             return false;
         }
 
@@ -177,9 +202,10 @@ public class AdonisScheduler {
             // Another scheduler instance claimed this occurrence!
             log.info("Duplicate scheduled occurrence ignored: workflowId={}, occurrenceKey={}", workflow.getId(), occurrenceKey);
             ZonedDateTime nextZoned = cron.next(nowZoned);
-            if (nextZoned != null) {
-                config.setNextFireTime(nextZoned.toInstant());
-                workflowRepository.save(workflow);
+            Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
+            config.setNextFireTime(calculatedNext);
+            if (calculatedNext != null) {
+                updateNextFireTime(workflow.getId(), calculatedNext);
             }
             return false;
         }
@@ -199,11 +225,41 @@ public class AdonisScheduler {
 
         config.setLastScheduledFireTime(nextDue);
         ZonedDateTime nextZoned = cron.next(nowZoned);
-        config.setNextFireTime(nextZoned != null ? nextZoned.toInstant() : null);
-        workflowRepository.save(workflow);
+        Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
+        config.setNextFireTime(calculatedNext);
+        updateFireTimes(workflow.getId(), calculatedNext, nextDue);
 
         log.info("Scheduled workflow queued: executionId={}, workflowId={}, occurrenceKey={}",
                 response.executionId(), workflow.getId(), occurrenceKey);
         return true;
+    }
+
+    private void updateNextFireTime(String workflowId, Instant nextFireTime) {
+        Query query = Query.query(Criteria.where("_id").is(workflowId));
+        Update update = new Update();
+        if (nextFireTime != null) {
+            update.set("triggerConfig.nextFireTime", nextFireTime);
+        } else {
+            update.unset("triggerConfig.nextFireTime");
+        }
+        update.set("updatedAt", Instant.now());
+        mongoTemplate.updateFirst(query, update, Workflow.class);
+    }
+
+    private void updateFireTimes(String workflowId, Instant nextFireTime, Instant lastScheduledFireTime) {
+        Query query = Query.query(Criteria.where("_id").is(workflowId));
+        Update update = new Update();
+        if (nextFireTime != null) {
+            update.set("triggerConfig.nextFireTime", nextFireTime);
+        } else {
+            update.unset("triggerConfig.nextFireTime");
+        }
+        if (lastScheduledFireTime != null) {
+            update.set("triggerConfig.lastScheduledFireTime", lastScheduledFireTime);
+        } else {
+            update.unset("triggerConfig.lastScheduledFireTime");
+        }
+        update.set("updatedAt", Instant.now());
+        mongoTemplate.updateFirst(query, update, Workflow.class);
     }
 }

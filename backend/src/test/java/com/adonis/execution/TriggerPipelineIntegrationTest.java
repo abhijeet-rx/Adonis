@@ -242,4 +242,87 @@ class TriggerPipelineIntegrationTest {
         assertEquals(first.executionId(), second.executionId());
         assertEquals(1, executionQueue.size());
     }
+
+    // ==========================================
+    // Phase 8.1 FIX #6 — Webhook Idempotency + Queue Failure Recovery
+    // ==========================================
+
+    @Test
+    void webhookPipeline_QueueFailureThenRetryWithSameIdempotencyKey_RecoversSuccessfully() {
+        // Create an ExecutionQueue that fails on first attempt to simulate transient Redis outage
+        boolean[] failEnqueue = new boolean[]{true};
+        InMemoryExecutionQueue faultyQueue = new InMemoryExecutionQueue() {
+            @Override
+            public void enqueue(com.adonis.queue.ExecutionJob job) {
+                if (failEnqueue[0]) {
+                    throw new RuntimeException("Redis connection refused: transient network error");
+                }
+                executionQueue.enqueue(job);
+            }
+        };
+
+        WorkflowExecutionService serviceWithFaultyQueue = new WorkflowExecutionService(
+                workflowRepository,
+                validator,
+                engine,
+                executionRepository,
+                faultyQueue
+        );
+
+        String idempotencyKey = "transient-fail-key-001";
+        Map<String, Object> payload = Map.of("event", "payment.created", "amount", 500);
+
+        // 1. First attempt fails due to transient queue outage
+        assertThrows(com.adonis.queue.QueueSubmissionException.class, () ->
+                serviceWithFaultyQueue.enqueueWebhookExecution(webhookWorkflow, idempotencyKey, payload)
+        );
+
+        // Verify execution was created in MongoDB and marked FAILED with no worker started
+        WorkflowExecution failedExec = executionRepository
+                .findByWorkflowIdAndIdempotencyKey(webhookWorkflow.getId(), idempotencyKey)
+                .orElseThrow();
+        assertEquals(ExecutionStatus.FAILED, failedExec.getStatus());
+        assertNull(failedExec.getStartedAt());
+        assertTrue(failedExec.getError().contains("Failed to queue"));
+        assertEquals(0, executionQueue.size());
+
+        // 2. Redis recovers (queue now succeeds)
+        failEnqueue[0] = false;
+
+        // 3. Client retries with the SAME Idempotency-Key
+        ExecuteWorkflowResponse retryResponse = serviceWithFaultyQueue.enqueueWebhookExecution(
+                webhookWorkflow,
+                idempotencyKey,
+                payload
+        );
+
+        // Verify it was successfully requeued with the same executionId
+        assertNotNull(retryResponse.executionId());
+        assertEquals(failedExec.getId(), retryResponse.executionId(), "Must reuse existing execution ID");
+        assertEquals(ExecutionStatus.QUEUED, retryResponse.status());
+        assertEquals(1, executionQueue.size(), "Job must be placed in queue upon recovery");
+
+        // Verify execution record in DB is now QUEUED and error cleared
+        WorkflowExecution requeuedExec = executionRepository.findById(failedExec.getId()).orElseThrow();
+        assertEquals(ExecutionStatus.QUEUED, requeuedExec.getStatus());
+        assertNull(requeuedExec.getError());
+
+        // 4. Execution worker processes the retried execution successfully
+        Optional<QueuedJobMessage> messageOpt = executionQueue.poll(Duration.ofMillis(500));
+        assertTrue(messageOpt.isPresent());
+        boolean processed = worker.processJob(messageOpt.get());
+        assertTrue(processed);
+
+        // 5. Final state in MongoDB is SUCCESS
+        WorkflowExecution completedExec = executionRepository.findById(failedExec.getId()).orElseThrow();
+        assertEquals(ExecutionStatus.SUCCESS, completedExec.getStatus());
+        assertNotNull(completedExec.getCompletedAt());
+
+        // 6. Verify only ONE execution exists for (workflowId, idempotencyKey)
+        List<WorkflowExecution> allForWorkflow = executionRepository.findAll();
+        long matchingCount = allForWorkflow.stream()
+                .filter(e -> webhookWorkflow.getId().equals(e.getWorkflowId()) && idempotencyKey.equals(e.getIdempotencyKey()))
+                .count();
+        assertEquals(1, matchingCount, "Must never produce more than one execution for the same (workflowId, idempotencyKey)");
+    }
 }

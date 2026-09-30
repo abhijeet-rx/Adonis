@@ -23,4 +23,6 @@ public interface WorkflowRepository extends MongoRepository<Workflow, String> {
     List<Workflow> findByStatusAndTriggerType(WorkflowStatus status, WorkflowTriggerType triggerType);
 
     Optional<Workflow> findByTriggerConfigWebhookPath(String webhookPath);
+
+    boolean existsByTriggerConfigWebhookPath(String webhookPath);
 }
