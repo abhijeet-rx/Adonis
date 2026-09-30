@@ -8,20 +8,15 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 8 — Scheduling + Webhooks** *(Completed)*
+**Phase 8.1.1 — Scheduler Concurrency & Queue Failure Hardening** *(Completed)*
 
-This phase introduces automated workflow triggering via cron-based schedules and HTTP webhooks. Both trigger mechanisms function strictly as event producers enqueuing execution jobs through the existing Phase 7 asynchronous Redis Streams pipeline (`ExecutionQueue` -> `adonis:execution:stream` -> `ExecutionWorker` -> `WorkflowExecutionEngine`). Neither scheduler nor webhook controllers invoke the execution engine synchronously, guaranteeing uniform worker leasing, failure retries, and execution isolation.
+This phase resolves critical concurrency and infrastructure resilience edge cases in the scheduling and trigger pipeline:
+- **Stale Scheduler Decision Race Prevention**: The scheduler atomically verifies that the evaluated workflow schedule state (`status = ACTIVE`, `triggerType = SCHEDULE`, `cronExpression`, `timezone`, and `nextFireTime == nextDue`) remains unmodified in MongoDB before claiming an occurrence. If a user modifies the schedule or deactivates the workflow between evaluation and claim (`modifiedCount == 0`), the iteration is immediately abandoned without creating stale executions, occurrences, or fire-time updates.
+- **Scheduled Occurrence Reliability & State Lifecycle**: Each scheduled fire time is uniquely identified by `(workflowId, scheduledFireTime)` backed by a MongoDB compound unique index. Occurrences transition through an explicit lifecycle: `CLAIMED` → `ENQUEUED` (or `FAILED_RETRYABLE`). At most one logical `WorkflowExecution` is ever created per occurrence.
+- **Redis Queue Failure Resilience**: Temporary Redis outages do NOT permanently consume or lose scheduled occurrences. If Redis queue submission fails due to a transient infrastructure error, the occurrence is marked `FAILED_RETRYABLE` holding its `executionId`, and the workflow's `nextFireTime` is intentionally NOT advanced. Subsequent scheduler iterations detect and recover the occurrence, retrying queue submission for the existing execution once Redis becomes available without spawning duplicate executions.
+- **Atomic Webhook Idempotency Retry**: The retry path for previously failed queue submissions performs an atomic MongoDB conditional state transition (`FAILED` → `QUEUED` where `startedAt == null`). Concurrent client retries for the same idempotency key are safely deduplicated, ensuring only one request enqueues to Redis while concurrent requests return the existing execution state.
+- **Precise Delivery Semantics**: Adonis guarantees **at-least-once delivery** across Redis Streams and the trigger pipeline, paired with **idempotent execution claiming** (`findAndModify: QUEUED → RUNNING`) and renewable worker ownership leases. The platform explicitly does NOT claim exactly-once execution or exactly-once external side effects.
 
-Key capabilities introduced in Phase 8:
-- **Cron Scheduling**: Standard Spring 5- and 6-field cron expressions evaluated against user-configurable timezones (defaulting to UTC via `java.time.ZoneId`).
-- **Downtime Misfire Policy (`DO_NOT_CATCH_UP`)**: Following application restarts or maintenance downtime, missed occurrences are not replayed en masse, scheduling immediately from the next upcoming occurrence to prevent cascading execution storms.
-- **Durable Multi-Instance Deduplication**: Prevents duplicate executions across distributed backend instances via atomic MongoDB uniqueness constraints on `(workflowId, scheduledFireTime)`.
-- **Fault-Isolated Centralized Scheduler**: Single-thread scheduler evaluates active workflows with per-workflow error containment; malformed cron configurations in one workflow cannot disrupt or stall the scheduler for other workflows.
-- **Unguessable Webhook Capability URLs**: Generates 64-character cryptographically secure hex tokens for `/api/webhooks/{webhookPath}`, avoiding public exposure of internal workflow IDs.
-- **Constant-Time Secret Authentication**: Optional webhook secrets verified in constant time (`MessageDigest.isEqual`) using SHA-256 hashing to eliminate timing attack vectors. Secrets are never logged, returned in responses, or stored in plaintext.
-- **Request Size Bounding & Deep Redaction**: Webhook payloads are bounded (configurable default 1MB) returning HTTP 413 if exceeded. Incoming headers, query parameters, and JSON bodies are sanitized using `SecretRedactor` to strip authorization headers, cookies, API keys, and bearer tokens before persistence.
-- **Webhook Deduplication via `Idempotency-Key`**: Supports optional client `Idempotency-Key` headers backed by a partial unique index in MongoDB to guarantee at-most-once execution for retried webhook deliveries.
-- **Visual Builder Integration**: Full UI configuration drawer for trigger selection (Manual, Schedule, Webhook), cron expression presets, timezone selector, copyable webhook capability URLs, secret regeneration, and trigger-specific execution history badges.
 
 ---
 
@@ -297,7 +292,9 @@ The `HttpRequestNode` enables outbound HTTP calls to user-specified destinations
 - [x] **Phase 7.1.1 — Fix Stale RUNNING Execution Handling**
 - [x] **Phase 8 — Scheduling + Webhooks**
 - [x] **Phase 8.1 — Trigger Reliability & Security Hardening**
+- [x] **Phase 8.1.1 — Scheduler Concurrency & Queue Failure Hardening**
 - [ ] **Phase 9 — AI Nodes**
 - [ ] **Phase 10 — Automated Testing + Testcontainers**
 - [ ] **Phase 11 — Docker + Deployment**
 - [ ] **Phase 12 — GitHub Actions CI/CD + Production Hardening**
+

@@ -3,13 +3,11 @@ package com.adonis.scheduler;
 import com.adonis.dto.ExecuteWorkflowResponse;
 import com.adonis.execution.WorkflowExecutionService;
 import com.adonis.execution.WorkflowTriggerValidator;
-import com.adonis.model.ScheduledOccurrence;
-import com.adonis.model.Workflow;
-import com.adonis.model.WorkflowStatus;
-import com.adonis.model.WorkflowTriggerConfig;
-import com.adonis.model.WorkflowTriggerType;
+import com.adonis.model.*;
+import com.adonis.queue.QueueSubmissionException;
 import com.adonis.repository.ScheduledOccurrenceRepository;
 import com.adonis.repository.WorkflowRepository;
+import com.mongodb.client.result.UpdateResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +27,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Centralized, scalable scheduler evaluating active cron workflows.
@@ -38,8 +37,10 @@ import java.util.Objects;
  * 1. Idempotent scheduling with durable duplicate protection across multiple backend instances
  * 2. Strict misfire policy: DO_NOT_CATCH_UP (no stale replay after downtime)
  * 3. Failure isolation: errors in one workflow never halt the scheduler
- * 4. Safe concurrent updates: uses targeted MongoDB field updates rather than replacing entire workflow
- * 5. Configurable enable/disable
+ * 4. Stale scheduler decision race prevention: conditional claim on unchanged schedule state
+ * 5. Redis queue failure resilience: transient infrastructure outages keep occurrences recoverable
+ * 6. Safe concurrent updates: uses targeted MongoDB field updates rather than replacing entire workflow
+ * 7. Configurable enable/disable
  */
 @Component
 @EnableScheduling
@@ -121,6 +122,10 @@ public class AdonisScheduler {
                         workflow.getId(), ex.getMessage(), ex);
             }
         }
+
+        // Secondary sweep for any remaining FAILED_RETRYABLE occurrences
+        queuedCount += recoverOrphanFailedOccurrences(now);
+
         return queuedCount;
     }
 
@@ -128,9 +133,10 @@ public class AdonisScheduler {
      * Processes a single scheduled workflow:
      * 1. Validates cron and timezone safely
      * 2. Checks due time and strict misfire policy (DO_NOT_CATCH_UP across downtime)
-     * 3. Enforces durable duplicate occurrence protection via MongoDB unique index
-     * 4. Enqueues execution via WorkflowExecutionService into Redis Streams
-     * 5. Performs targeted field update in MongoDB to avoid race conditions with user edits
+     * 3. Atomically verifies evaluated schedule state is still current before claiming (Fix Stale Scheduler Race)
+     * 4. Enforces durable duplicate occurrence protection via MongoDB unique index with explicit status lifecycle
+     * 5. Enqueues execution via WorkflowExecutionService into Redis Streams
+     * 6. Advances schedule fire times only on successful queue submission (survives Redis failures)
      */
     public boolean processWorkflowSchedule(Workflow workflow, Instant now) {
         if (workflow == null || workflow.getStatus() != WorkflowStatus.ACTIVE || workflow.getTriggerType() != WorkflowTriggerType.SCHEDULE) {
@@ -192,46 +198,208 @@ public class AdonisScheduler {
             return false;
         }
 
-        // 4. Durable duplicate protection: atomic insert of ScheduledOccurrence
-        String occurrenceKey = ScheduledOccurrence.buildOccurrenceKey(workflow.getId(), nextDue);
-        ScheduledOccurrence occurrence = new ScheduledOccurrence(occurrenceKey, workflow.getId(), nextDue, null, now);
+        // 4. Phase 8.1.1 FIX: Stale scheduler decision race protection.
+        // Atomically verify that the evaluated schedule state (cron, timezone, status, nextFireTime) is still current.
+        // If user changed cron, timezone, status, or triggerType between read and claim, modifiedCount will be 0.
+        Query scheduleQuery = Query.query(
+                Criteria.where("_id").is(workflow.getId())
+                        .and("status").is(WorkflowStatus.ACTIVE)
+                        .and("triggerType").is(WorkflowTriggerType.SCHEDULE)
+                        .and("triggerConfig.cronExpression").is(config.getCronExpression())
+                        .and("triggerConfig.timezone").is(config.getTimezone())
+                        .and("triggerConfig.nextFireTime").is(nextDue)
+        );
+        Update claimTouchUpdate = new Update().set("updatedAt", Instant.now());
+        UpdateResult claimCheck = mongoTemplate.updateFirst(scheduleQuery, claimTouchUpdate, Workflow.class);
+        if (claimCheck != null && claimCheck.getModifiedCount() == 0) {
+            log.info("Workflow schedule modified or stale snapshot detected for workflow {}. Abandoning scheduler claim.", workflow.getId());
+            return false;
+        }
 
+        // 5. Phase 8.1.1 FIX: Atomic occurrence claim with explicit status lifecycle (CLAIMED -> ENQUEUED / FAILED_RETRYABLE)
+        String occurrenceKey = ScheduledOccurrence.buildOccurrenceKey(workflow.getId(), nextDue);
+        ScheduledOccurrence occurrence = new ScheduledOccurrence(
+                occurrenceKey,
+                workflow.getId(),
+                nextDue,
+                null,
+                ScheduledOccurrenceStatus.CLAIMED,
+                now
+        );
+
+        boolean isNewClaim;
         try {
             mongoTemplate.insert(occurrence);
+            isNewClaim = true;
         } catch (DuplicateKeyException ex) {
-            // Another scheduler instance claimed this occurrence!
-            log.info("Duplicate scheduled occurrence ignored: workflowId={}, occurrenceKey={}", workflow.getId(), occurrenceKey);
-            ZonedDateTime nextZoned = cron.next(nowZoned);
-            Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
-            config.setNextFireTime(calculatedNext);
-            if (calculatedNext != null) {
-                updateNextFireTime(workflow.getId(), calculatedNext);
+            isNewClaim = false;
+        }
+
+        ZonedDateTime nextZoned = cron.next(nowZoned);
+        Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
+
+        if (!isNewClaim) {
+            // Occurrence already exists in MongoDB
+            ScheduledOccurrence existing = scheduledOccurrenceRepository.findById(occurrenceKey).orElse(null);
+            if (existing == null || existing.getStatus() == ScheduledOccurrenceStatus.ENQUEUED) {
+                log.info("Duplicate scheduled occurrence already claimed/enqueued: workflowId={}, occurrenceKey={}", workflow.getId(), occurrenceKey);
+                // Advance nextFireTime if the workflow in memory still points to this occurrence
+                if (nextDue.equals(config.getNextFireTime()) && calculatedNext != null) {
+                    config.setNextFireTime(calculatedNext);
+                    config.setLastScheduledFireTime(nextDue);
+                    updateFireTimes(workflow.getId(), calculatedNext, nextDue);
+                }
+                return false;
+            }
+            if (existing.getStatus() == ScheduledOccurrenceStatus.FAILED_RETRYABLE
+                    || existing.getStatus() == ScheduledOccurrenceStatus.CLAIMED) {
+                // Phase 8.1.1 FIX: Recover occurrence that previously failed queue submission
+                log.info("Recovering failed/claimed scheduled occurrence: workflowId={}, occurrenceKey={}, executionId={}",
+                        workflow.getId(), occurrenceKey, existing.getExecutionId());
+                return recoverAndEnqueueOccurrence(workflow, existing, nextDue, cron, nowZoned);
             }
             return false;
         }
 
-        // 5. Winning scheduler instance creates QUEUED execution and enqueues job
+        // 6. Winning scheduler instance creates QUEUED execution and enqueues job
         ExecuteWorkflowResponse response;
         try {
             response = executionService.enqueueScheduledExecution(workflow, occurrenceKey, nextDue);
         } catch (Exception ex) {
             log.error("Failed to enqueue scheduled execution for workflow {}: {}", workflow.getId(), ex.getMessage(), ex);
+            if (isRecoverableQueueFailure(ex)) {
+                String executionId = null;
+                if (ex instanceof QueueSubmissionException qse) {
+                    executionId = qse.getExecutionId();
+                }
+                occurrence.setExecutionId(executionId);
+                occurrence.setStatus(ScheduledOccurrenceStatus.FAILED_RETRYABLE);
+                occurrence.setErrorMessage(ex.getMessage());
+                scheduledOccurrenceRepository.save(occurrence);
+                log.warn("Scheduled occurrence marked FAILED_RETRYABLE for recovery: workflowId={}, occurrenceKey={}, executionId={}",
+                        workflow.getId(), occurrenceKey, executionId);
+            }
+            // Phase 8.1.1 FIX: DO NOT advance schedule fire times when queue submission fails!
             return false;
         }
 
-        // 6. Record executionId on occurrence and advance workflow nextFireTime
+        // 7. Success branch: record executionId, mark ENQUEUED, and advance workflow fire times
         occurrence.setExecutionId(response.executionId());
+        occurrence.setStatus(ScheduledOccurrenceStatus.ENQUEUED);
         scheduledOccurrenceRepository.save(occurrence);
 
         config.setLastScheduledFireTime(nextDue);
-        ZonedDateTime nextZoned = cron.next(nowZoned);
-        Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
         config.setNextFireTime(calculatedNext);
         updateFireTimes(workflow.getId(), calculatedNext, nextDue);
 
         log.info("Scheduled workflow queued: executionId={}, workflowId={}, occurrenceKey={}",
                 response.executionId(), workflow.getId(), occurrenceKey);
         return true;
+    }
+
+    private boolean recoverAndEnqueueOccurrence(
+            Workflow workflow,
+            ScheduledOccurrence occurrence,
+            Instant nextDue,
+            CronExpression cron,
+            ZonedDateTime nowZoned) {
+        String executionId = occurrence.getExecutionId();
+        ExecuteWorkflowResponse response;
+        try {
+            if (executionId != null && !executionId.isBlank()) {
+                response = executionService.retryScheduledQueueSubmission(executionId, workflow, occurrence.getId());
+            } else {
+                response = executionService.enqueueScheduledExecution(workflow, occurrence.getId(), nextDue);
+            }
+        } catch (Exception ex) {
+            log.error("Failed to recover scheduled occurrence {}: {}", occurrence.getId(), ex.getMessage(), ex);
+            if (isRecoverableQueueFailure(ex)) {
+                String errExecutionId = (ex instanceof QueueSubmissionException qse) ? qse.getExecutionId() : executionId;
+                if (errExecutionId != null && occurrence.getExecutionId() == null) {
+                    occurrence.setExecutionId(errExecutionId);
+                }
+                occurrence.setStatus(ScheduledOccurrenceStatus.FAILED_RETRYABLE);
+                occurrence.setErrorMessage(ex.getMessage());
+                occurrence.incrementRetryCount();
+                scheduledOccurrenceRepository.save(occurrence);
+            }
+            return false;
+        }
+
+        occurrence.setExecutionId(response.executionId());
+        occurrence.setStatus(ScheduledOccurrenceStatus.ENQUEUED);
+        occurrence.incrementRetryCount();
+        occurrence.setErrorMessage(null);
+        scheduledOccurrenceRepository.save(occurrence);
+
+        // Advance schedule once enqueued
+        ZonedDateTime nextZoned = cron.next(nowZoned);
+        Instant calculatedNext = nextZoned != null ? nextZoned.toInstant() : null;
+        if (workflow.getTriggerConfig() != null) {
+            workflow.getTriggerConfig().setLastScheduledFireTime(nextDue);
+            workflow.getTriggerConfig().setNextFireTime(calculatedNext);
+        }
+        updateFireTimes(workflow.getId(), calculatedNext, nextDue);
+
+        log.info("Scheduled occurrence recovered and enqueued: executionId={}, occurrenceKey={}",
+                response.executionId(), occurrence.getId());
+        return true;
+    }
+
+    private int recoverOrphanFailedOccurrences(Instant now) {
+        List<ScheduledOccurrence> failedOccurrences = scheduledOccurrenceRepository.findByStatus(ScheduledOccurrenceStatus.FAILED_RETRYABLE);
+        if (failedOccurrences.isEmpty()) {
+            return 0;
+        }
+
+        int recovered = 0;
+        for (ScheduledOccurrence occurrence : failedOccurrences) {
+            try {
+                Optional<Workflow> wfOpt = workflowRepository.findById(occurrence.getWorkflowId());
+                if (wfOpt.isEmpty() || wfOpt.get().getStatus() != WorkflowStatus.ACTIVE
+                        || wfOpt.get().getTriggerType() != WorkflowTriggerType.SCHEDULE) {
+                    continue;
+                }
+                Workflow wf = wfOpt.get();
+                WorkflowTriggerConfig config = wf.getTriggerConfig();
+                if (config == null || config.getCronExpression() == null) {
+                    continue;
+                }
+                ZoneId zoneId = WorkflowTriggerValidator.parseAndValidateZoneId(config.getTimezone());
+                CronExpression cron = WorkflowTriggerValidator.parseAndValidateCron(config.getCronExpression());
+                ZonedDateTime nowZoned = ZonedDateTime.ofInstant(now, zoneId);
+
+                boolean success = recoverAndEnqueueOccurrence(wf, occurrence, occurrence.getScheduledFireTime(), cron, nowZoned);
+                if (success) {
+                    recovered++;
+                }
+            } catch (Exception ex) {
+                log.warn("Failed recovery sweep for occurrence {}: {}", occurrence.getId(), ex.getMessage());
+            }
+        }
+        return recovered;
+    }
+
+    public static boolean isRecoverableQueueFailure(Throwable ex) {
+        if (ex == null) {
+            return false;
+        }
+        if (ex instanceof QueueSubmissionException) {
+            return true;
+        }
+        Throwable current = ex;
+        while (current != null) {
+            String msg = current.getMessage() != null ? current.getMessage().toLowerCase() : "";
+            String name = current.getClass().getName().toLowerCase();
+            if (name.contains("redis") || name.contains("connect") || name.contains("socket") || name.contains("timeout")
+                    || msg.contains("connection refused") || msg.contains("redis") || msg.contains("timeout")
+                    || msg.contains("broken pipe") || msg.contains("queue service is unavailable")
+                    || msg.contains("failed to queue")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void updateNextFireTime(String workflowId, Instant nextFireTime) {

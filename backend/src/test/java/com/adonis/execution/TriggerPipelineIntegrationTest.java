@@ -68,6 +68,9 @@ class TriggerPipelineIntegrationTest {
     @Autowired
     private MongoTemplate mongoTemplate;
 
+    @Autowired
+    private com.adonis.repository.ScheduledOccurrenceRepository scheduledOccurrenceRepository;
+
     private InMemoryExecutionQueue executionQueue;
     private WorkflowExecutionService executionService;
     private ExecutionWorker worker;
@@ -79,6 +82,7 @@ class TriggerPipelineIntegrationTest {
     void setUp() {
         executionRepository.deleteAll();
         workflowRepository.deleteAll();
+        scheduledOccurrenceRepository.deleteAll();
 
         executionQueue = new InMemoryExecutionQueue();
         executionService = new WorkflowExecutionService(
@@ -86,7 +90,8 @@ class TriggerPipelineIntegrationTest {
                 validator,
                 engine,
                 executionRepository,
-                executionQueue
+                executionQueue,
+                mongoTemplate
         );
 
         worker = new ExecutionWorker(
@@ -266,7 +271,8 @@ class TriggerPipelineIntegrationTest {
                 validator,
                 engine,
                 executionRepository,
-                faultyQueue
+                faultyQueue,
+                mongoTemplate
         );
 
         String idempotencyKey = "transient-fail-key-001";
@@ -325,4 +331,159 @@ class TriggerPipelineIntegrationTest {
                 .count();
         assertEquals(1, matchingCount, "Must never produce more than one execution for the same (workflowId, idempotencyKey)");
     }
+
+    // ==========================================
+    // Phase 8.1.1 FIX #12 — Webhook Idempotency Concurrency Hardening
+    // ==========================================
+
+    @Test
+    void webhookPipeline_ConcurrentRetryRace_OnlyOneTransitionsAndEnqueues() throws Exception {
+        String idempotencyKey = "concurrent-race-key-001";
+        Map<String, Object> payload = Map.of("event", "payment.captured");
+
+        // Pre-create execution record in FAILED status (simulating prior queue outage)
+        WorkflowExecution failedExec = WorkflowExecution.queued(webhookWorkflow.getId(), webhookWorkflow.getUserId(), "WEBHOOK");
+        failedExec.setIdempotencyKey(idempotencyKey);
+        failedExec.markQueueFailed("Previous Redis failure");
+        failedExec = executionRepository.save(failedExec);
+
+        String executionId = failedExec.getId();
+        assertEquals(ExecutionStatus.FAILED, failedExec.getStatus());
+        assertEquals(0, executionQueue.size());
+
+        // Launch 2 concurrent retry requests for the SAME failed execution
+        int threadCount = 2;
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(threadCount);
+        java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(threadCount);
+        @SuppressWarnings("unchecked")
+        java.util.concurrent.Future<ExecuteWorkflowResponse>[] futures = new java.util.concurrent.Future[threadCount];
+
+        for (int i = 0; i < threadCount; i++) {
+            futures[i] = executor.submit(() -> {
+                barrier.await();
+                return executionService.enqueueWebhookExecution(webhookWorkflow, idempotencyKey, payload);
+            });
+        }
+
+        ExecuteWorkflowResponse respA = futures[0].get();
+        ExecuteWorkflowResponse respB = futures[1].get();
+        executor.shutdown();
+
+        // Both responses must refer to the SAME execution ID
+        assertEquals(executionId, respA.executionId());
+        assertEquals(executionId, respB.executionId());
+
+        // Crucial invariant: Exactly ONE job was placed into the execution queue (not duplicated)
+        assertEquals(1, executionQueue.size(), "Only one concurrent request must win the atomic transition and enqueue");
+
+        // Exactly one WorkflowExecution document exists in MongoDB
+        List<WorkflowExecution> executions = executionRepository.findAll();
+        long count = executions.stream()
+                .filter(e -> webhookWorkflow.getId().equals(e.getWorkflowId()) && idempotencyKey.equals(e.getIdempotencyKey()))
+                .count();
+        assertEquals(1, count);
+
+        // State in DB is QUEUED
+        WorkflowExecution finalExec = executionRepository.findById(executionId).orElseThrow();
+        assertEquals(ExecutionStatus.QUEUED, finalExec.getStatus());
+    }
+
+    // ==========================================
+    // Phase 8.1.1 FIX #3 & #6 — Scheduled Pipeline Redis Failure + Recovery
+    // ==========================================
+
+    @Test
+    void scheduledPipeline_QueueFailureThenRecovery_OccurrenceRecoversWithoutDuplicateExecution() {
+        // Setup a scheduler and service with a queue that fails on first try
+        boolean[] failEnqueue = new boolean[]{true};
+        InMemoryExecutionQueue faultyQueue = new InMemoryExecutionQueue() {
+            @Override
+            public void enqueue(com.adonis.queue.ExecutionJob job) {
+                if (failEnqueue[0]) {
+                    throw new RuntimeException("Redis connection refused: transient network error");
+                }
+                executionQueue.enqueue(job);
+            }
+        };
+
+        WorkflowExecutionService serviceWithFaultyQueue = new WorkflowExecutionService(
+                workflowRepository,
+                validator,
+                engine,
+                executionRepository,
+                faultyQueue,
+                mongoTemplate
+        );
+
+        com.adonis.scheduler.AdonisScheduler pipelineScheduler = new com.adonis.scheduler.AdonisScheduler(
+                workflowRepository,
+                serviceWithFaultyQueue,
+                scheduledOccurrenceRepository,
+                mongoTemplate
+        );
+
+        Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        scheduleWorkflow.getTriggerConfig().setNextFireTime(scheduledTime);
+        scheduleWorkflow = workflowRepository.save(scheduleWorkflow);
+
+        Instant tickNow = Instant.parse("2026-10-01T10:05:01Z");
+        pipelineScheduler.setStartupTime(Instant.parse("2026-10-01T10:00:00Z"));
+
+        // 1. First tick fails due to transient queue outage
+        int fired1 = pipelineScheduler.checkAndRunSchedules(tickNow);
+        assertEquals(0, fired1, "No execution should be successfully queued on Redis failure");
+
+        // Occurrence was created in MongoDB with status FAILED_RETRYABLE
+        String occurrenceKey = ScheduledOccurrence.buildOccurrenceKey(scheduleWorkflow.getId(), scheduledTime);
+        ScheduledOccurrence occurrence = scheduledOccurrenceRepository.findById(occurrenceKey).orElseThrow();
+        assertEquals(ScheduledOccurrenceStatus.FAILED_RETRYABLE, occurrence.getStatus());
+        assertNotNull(occurrence.getExecutionId());
+
+        // Workflow nextFireTime was NOT advanced
+        Workflow wfAfterFail = workflowRepository.findById(scheduleWorkflow.getId()).orElseThrow();
+        assertEquals(scheduledTime, wfAfterFail.getTriggerConfig().getNextFireTime(),
+                "nextFireTime must NOT be advanced when queue submission fails");
+
+        // Exactly 1 execution exists in DB in FAILED status
+        WorkflowExecution failedExec = executionRepository.findById(occurrence.getExecutionId()).orElseThrow();
+        assertEquals(ExecutionStatus.FAILED, failedExec.getStatus());
+        assertEquals(0, executionQueue.size());
+
+        // 2. Redis recovers (queue now succeeds)
+        failEnqueue[0] = false;
+
+        // 3. Second scheduler tick runs
+        int fired2 = pipelineScheduler.checkAndRunSchedules(tickNow.plusSeconds(5));
+        assertEquals(1, fired2, "Scheduler should recover the failed occurrence");
+
+        // Occurrence in MongoDB is now ENQUEUED with the SAME executionId
+        ScheduledOccurrence recoveredOccurrence = scheduledOccurrenceRepository.findById(occurrenceKey).orElseThrow();
+        assertEquals(ScheduledOccurrenceStatus.ENQUEUED, recoveredOccurrence.getStatus());
+        assertEquals(occurrence.getExecutionId(), recoveredOccurrence.getExecutionId());
+
+        // Exactly ONE job was placed into executionQueue
+        assertEquals(1, executionQueue.size());
+
+        // Workflow nextFireTime is NOW advanced
+        Workflow wfAfterRecover = workflowRepository.findById(scheduleWorkflow.getId()).orElseThrow();
+        assertNotEquals(scheduledTime, wfAfterRecover.getTriggerConfig().getNextFireTime());
+        assertEquals(scheduledTime, wfAfterRecover.getTriggerConfig().getLastScheduledFireTime());
+
+        // Exactly ONE execution exists in DB for this occurrence (NO duplicate execution created)
+        List<WorkflowExecution> allExecs = executionRepository.findAll();
+        long matchingExecCount = allExecs.stream()
+                .filter(e -> occurrenceKey.equals(e.getScheduledOccurrence()))
+                .count();
+        assertEquals(1, matchingExecCount, "Must never produce more than one execution for the same occurrence");
+
+        // 4. Execution worker processes the job to SUCCESS
+        Optional<QueuedJobMessage> messageOpt = executionQueue.poll(Duration.ofMillis(500));
+        assertTrue(messageOpt.isPresent());
+        boolean processed = worker.processJob(messageOpt.get());
+        assertTrue(processed);
+
+        WorkflowExecution completedExec = executionRepository.findById(occurrence.getExecutionId()).orElseThrow();
+        assertEquals(ExecutionStatus.SUCCESS, completedExec.getStatus());
+    }
 }
+

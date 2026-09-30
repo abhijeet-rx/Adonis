@@ -455,6 +455,44 @@ This document records the architectural and technical decisions made during the 
   - Positive: Guarantees strict trigger consistency and database integrity; eliminates race conditions between users and the scheduler; prevents stale trigger executions; ensures reliable idempotency recovery across infrastructure hiccups; hardens webhook paths against enumeration and injection attacks.
   - Trade-off: Workflows with misconfigured paths or oversized idempotency keys are strictly rejected with 4xx errors; downtime occurrences are discarded without backfill.
 
+---
+
+## ADR-024: Phase 8.1.1 — Scheduler Concurrency & Queue Failure Hardening
+
+* **Status**: Accepted
+* **Date**: 2026-09-30
+* **Context**:
+  A post-Phase 8.1 audit identified two critical scheduler reliability vulnerabilities and one trigger concurrency edge case:
+  1. *Stale Scheduler Decision Race*: The scheduler evaluates an in-memory workflow snapshot, determines a due occurrence, and proceeds to claim and enqueue. If a user modifies the workflow's cron expression, timezone, trigger type, or status between the scheduler's read and claim steps, the scheduler could enqueue an execution based on obsolete schedule parameters.
+  2. *Redis Enqueue Failure Permanently Losing Occurrences*: If Redis was temporarily unavailable when the scheduler attempted to enqueue an execution, the `ScheduledOccurrence` record was already inserted into MongoDB. Subsequent scheduler ticks detected the existing record as a duplicate and skipped it, causing the scheduled occurrence to be permanently lost rather than retried.
+  3. *Webhook Idempotency Concurrency Race*: Concurrent client retry requests for a webhook execution that previously failed queue submission could simultaneously attempt re-queueing, causing duplicate jobs to be submitted to Redis Streams.
+* **Decision**:
+  - **Atomic Conditional Scheduler Claim**:
+    Before inserting an occurrence or creating an execution, the scheduler executes an atomic conditional update query against MongoDB:
+    ```java
+    Query scheduleQuery = Query.query(
+        Criteria.where("_id").is(workflow.getId())
+            .and("status").is(WorkflowStatus.ACTIVE)
+            .and("triggerType").is(WorkflowTriggerType.SCHEDULE)
+            .and("triggerConfig.cronExpression").is(config.getCronExpression())
+            .and("triggerConfig.timezone").is(config.getTimezone())
+            .and("triggerConfig.nextFireTime").is(nextDue)
+    );
+    ```
+    If `claimCheck.getModifiedCount() == 0`, the workflow was modified or deactivated after the scheduler's read step. The scheduler immediately abandons the iteration without creating stale executions, saving occurrences, or modifying fire times.
+  - **Explicit Scheduled Occurrence Lifecycle**:
+    Added `ScheduledOccurrenceStatus` (`CLAIMED`, `ENQUEUED`, `FAILED_RETRYABLE`). Occurrences are uniquely keyed by `(workflowId, scheduledFireTime)` via MongoDB compound unique index. At most one logical `WorkflowExecution` is created per occurrence.
+  - **Deferred Schedule Advancement & Redis Failure Tolerance**:
+    The workflow's `nextFireTime` is never advanced when queue submission fails. On transient Redis failure, the occurrence is marked `FAILED_RETRYABLE` with the created `executionId` and error details. Subsequent scheduler ticks or recovery sweeps detect the recoverable occurrence and retry queue submission for the existing `executionId` (`retryScheduledQueueSubmission`), avoiding duplicate `WorkflowExecution` documents. Only upon successful queue dispatch is the occurrence marked `ENQUEUED` and `nextFireTime` advanced.
+  - **Atomic Webhook Idempotency Transition**:
+    `WorkflowExecutionService.retryWebhookQueueSubmission` performs an atomic conditional `mongoTemplate.updateFirst` query (`status == FAILED`, `startedAt == null`) transitioning the execution to `QUEUED`. Only the first concurrent request modifies the record and enqueues to Redis; concurrent requests observe `modifiedCount == 0` and return the existing execution state without duplicate queue submissions.
+  - **Precise Delivery & Execution Semantics**:
+    Adonis enforces **at-least-once delivery** across Redis Streams and trigger producers, combined with **idempotent execution claiming** (`findAndModify: QUEUED → RUNNING`) and renewable worker ownership leases (`leaseUntil`, `lastHeartbeatAt`). Adonis explicitly does not claim exactly-once execution or exactly-once external side effects.
+* **Consequences**:
+  - Positive: Eliminates stale schedule races; guarantees scheduled occurrences survive transient Redis outages without data loss or duplication; guarantees single execution creation per occurrence; eliminates duplicate enqueuing on concurrent webhook retries; maintains strict separation between user-owned workflow canvas fields and scheduler-owned fire times.
+  - Trade-off: Non-retryable application errors during execution creation are not masked as retryable queue failures; scheduler claims require an additional lightweight atomic touch query before reserving occurrences.
+
+
 
 
 

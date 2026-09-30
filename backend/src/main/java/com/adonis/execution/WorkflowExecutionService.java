@@ -17,12 +17,17 @@ import com.adonis.queue.QueueSubmissionException;
 import com.adonis.repository.WorkflowExecutionRepository;
 import com.adonis.repository.WorkflowRepository;
 import com.adonis.util.SecretRedactor;
+import com.mongodb.client.result.UpdateResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -38,13 +43,23 @@ public class WorkflowExecutionService {
     private final WorkflowExecutionEngine engine;
     private final WorkflowExecutionRepository executionRepository;
     private final ExecutionQueue executionQueue;
+    private final MongoTemplate mongoTemplate;
 
     public WorkflowExecutionService(
             WorkflowRepository workflowRepository,
             WorkflowExecutionValidator validator,
             WorkflowExecutionEngine engine,
             WorkflowExecutionRepository executionRepository) {
-        this(workflowRepository, validator, engine, executionRepository, null);
+        this(workflowRepository, validator, engine, executionRepository, null, null);
+    }
+
+    public WorkflowExecutionService(
+            WorkflowRepository workflowRepository,
+            WorkflowExecutionValidator validator,
+            WorkflowExecutionEngine engine,
+            WorkflowExecutionRepository executionRepository,
+            ExecutionQueue executionQueue) {
+        this(workflowRepository, validator, engine, executionRepository, executionQueue, null);
     }
 
     @Autowired
@@ -53,12 +68,14 @@ public class WorkflowExecutionService {
             WorkflowExecutionValidator validator,
             WorkflowExecutionEngine engine,
             WorkflowExecutionRepository executionRepository,
-            @Autowired(required = false) ExecutionQueue executionQueue) {
+            @Autowired(required = false) ExecutionQueue executionQueue,
+            @Autowired(required = false) MongoTemplate mongoTemplate) {
         this.workflowRepository = Objects.requireNonNull(workflowRepository, "WorkflowRepository must not be null");
         this.validator = Objects.requireNonNull(validator, "WorkflowExecutionValidator must not be null");
         this.engine = Objects.requireNonNull(engine, "WorkflowExecutionEngine must not be null");
         this.executionRepository = Objects.requireNonNull(executionRepository, "WorkflowExecutionRepository must not be null");
         this.executionQueue = executionQueue;
+        this.mongoTemplate = mongoTemplate;
     }
 
     /**
@@ -90,7 +107,7 @@ public class WorkflowExecutionService {
             log.error("ExecutionQueue is not configured; cannot enqueue execution: {}", executionId);
             execution.markQueueFailed("Execution queue service is unavailable");
             executionRepository.save(execution);
-            throw new QueueSubmissionException("Execution queue is not configured");
+            throw new QueueSubmissionException(executionId, "Execution queue is not configured");
         }
 
         ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), userId, triggerType, Instant.now());
@@ -101,7 +118,7 @@ public class WorkflowExecutionService {
             log.error("Failed to enqueue execution job for executionId: {}", executionId, ex);
             execution.markQueueFailed("Failed to queue workflow execution");
             executionRepository.save(execution);
-            throw new QueueSubmissionException("Failed to enqueue workflow execution", ex);
+            throw new QueueSubmissionException(executionId, "Failed to enqueue workflow execution", ex);
         }
 
         return ExecuteWorkflowResponse.queued(executionId, workflow.getId());
@@ -109,6 +126,7 @@ public class WorkflowExecutionService {
 
     /**
      * Asynchronously enqueues a scheduled workflow execution through the Redis execution queue.
+     * Enforces duplicate execution prevention via the unique occurrence key relationship.
      *
      * @param workflow the scheduled workflow
      * @param occurrenceKey unique idempotency occurrence key
@@ -119,6 +137,23 @@ public class WorkflowExecutionService {
         Objects.requireNonNull(workflow, "Workflow must not be null");
         validator.validateAndOrder(workflow);
         String triggerType = WorkflowTriggerType.SCHEDULE.name();
+
+        // Prevent duplicate execution creation: check if an execution already exists for this occurrence
+        if (occurrenceKey != null) {
+            Optional<WorkflowExecution> existingOpt = executionRepository.findByScheduledOccurrence(occurrenceKey);
+            if (existingOpt.isPresent()) {
+                WorkflowExecution existing = existingOpt.get();
+                // If it previously failed queue submission before starting, retry queue submission
+                if (existing.getStatus() == ExecutionStatus.FAILED && existing.getStartedAt() == null) {
+                    log.info("Retrying transient queue submission failure for scheduled occurrence={}, executionId={}",
+                            occurrenceKey, existing.getId());
+                    return retryScheduledQueueSubmission(existing.getId(), workflow, occurrenceKey);
+                }
+                log.info("Duplicate scheduled occurrence execution ignored: workflowId={}, occurrenceKey={}, executionId={}, status={}",
+                        workflow.getId(), occurrenceKey, existing.getId(), existing.getStatus());
+                return new ExecuteWorkflowResponse(existing.getId(), workflow.getId(), existing.getStatus());
+            }
+        }
 
         WorkflowExecution execution = WorkflowExecution.queued(workflow.getId(), workflow.getUserId(), triggerType);
         execution.setScheduledOccurrence(occurrenceKey);
@@ -139,7 +174,7 @@ public class WorkflowExecutionService {
             log.error("ExecutionQueue is not configured; cannot enqueue scheduled execution: {}", executionId);
             execution.markQueueFailed("Execution queue service is unavailable");
             executionRepository.save(execution);
-            throw new QueueSubmissionException("Execution queue is not configured");
+            throw new QueueSubmissionException(executionId, "Execution queue is not configured");
         }
 
         ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), workflow.getUserId(), triggerType, Instant.now());
@@ -151,7 +186,67 @@ public class WorkflowExecutionService {
             log.error("Failed to enqueue scheduled job for executionId: {}", executionId, ex);
             execution.markQueueFailed("Failed to queue scheduled execution");
             executionRepository.save(execution);
-            throw new QueueSubmissionException("Failed to enqueue scheduled execution", ex);
+            throw new QueueSubmissionException(executionId, "Failed to enqueue scheduled execution", ex);
+        }
+
+        return ExecuteWorkflowResponse.queued(executionId, workflow.getId());
+    }
+
+    /**
+     * Retries queue submission for a scheduled occurrence whose previous submission failed due to a transient infrastructure outage.
+     * Performs an atomic MongoDB state transition to prevent concurrent retry races from spawning duplicate executions.
+     */
+    public ExecuteWorkflowResponse retryScheduledQueueSubmission(
+            String executionId,
+            Workflow workflow,
+            String occurrenceKey) {
+        validator.validateAndOrder(workflow);
+        String triggerType = WorkflowTriggerType.SCHEDULE.name();
+
+        WorkflowExecution existing = executionRepository.findById(executionId)
+                .orElseThrow(() -> new ExecutionNotFoundException("Execution not found: " + executionId));
+
+        // Atomic transition FAILED -> QUEUED to prevent concurrent retry race
+        if (mongoTemplate != null) {
+            Query query = Query.query(Criteria.where("_id").is(executionId)
+                    .and("status").is(ExecutionStatus.FAILED)
+                    .and("startedAt").is(null));
+            Update update = new Update()
+                    .set("status", ExecutionStatus.QUEUED)
+                    .set("queuedAt", Instant.now())
+                    .unset("error")
+                    .unset("completedAt")
+                    .unset("durationMs")
+                    .unset("workerId")
+                    .unset("leaseUntil");
+            UpdateResult result = mongoTemplate.updateFirst(query, update, WorkflowExecution.class);
+            if (result.getModifiedCount() == 0) {
+                log.info("Concurrent scheduled retry already claimed/transitioned for executionId={}", executionId);
+                WorkflowExecution current = executionRepository.findById(executionId).orElse(existing);
+                return new ExecuteWorkflowResponse(current.getId(), workflow.getId(), current.getStatus());
+            }
+        } else {
+            existing.markRequeued();
+            existing = executionRepository.save(existing);
+        }
+
+        if (executionQueue == null) {
+            log.error("ExecutionQueue is not configured; cannot retry scheduled execution: {}", executionId);
+            existing.markQueueFailed("Execution queue service is unavailable");
+            executionRepository.save(existing);
+            throw new QueueSubmissionException(executionId, "Execution queue is not configured");
+        }
+
+        ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), workflow.getUserId(), triggerType, Instant.now());
+        try {
+            executionQueue.enqueue(job);
+            log.info("Scheduled execution re-enqueued successfully: executionId={}, workflowId={}, occurrenceKey={}",
+                    executionId, workflow.getId(), occurrenceKey);
+        } catch (Exception ex) {
+            log.error("Failed to re-enqueue scheduled job for executionId: {}", executionId, ex);
+            existing.markQueueFailed("Failed to queue scheduled execution");
+            executionRepository.save(existing);
+            throw new QueueSubmissionException(executionId, "Failed to enqueue scheduled execution", ex);
         }
 
         return ExecuteWorkflowResponse.queued(executionId, workflow.getId());
@@ -220,7 +315,7 @@ public class WorkflowExecutionService {
             log.error("ExecutionQueue is not configured; cannot enqueue webhook execution: {}", executionId);
             execution.markQueueFailed("Execution queue service is unavailable");
             executionRepository.save(execution);
-            throw new QueueSubmissionException("Execution queue is not configured");
+            throw new QueueSubmissionException(executionId, "Execution queue is not configured");
         }
 
         ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), workflow.getUserId(), triggerType, Instant.now());
@@ -232,7 +327,7 @@ public class WorkflowExecutionService {
             log.error("Failed to enqueue webhook job for executionId: {}", executionId, ex);
             execution.markQueueFailed("Failed to queue webhook execution");
             executionRepository.save(execution);
-            throw new QueueSubmissionException("Failed to enqueue webhook execution", ex);
+            throw new QueueSubmissionException(executionId, "Failed to enqueue webhook execution", ex);
         }
 
         return ExecuteWorkflowResponse.queued(executionId, workflow.getId());
@@ -244,16 +339,37 @@ public class WorkflowExecutionService {
             String safeKey) {
         validator.validateAndOrder(workflow);
         String triggerType = WorkflowTriggerType.WEBHOOK.name();
-
-        existing.markRequeued();
-        existing = executionRepository.save(existing);
         String executionId = existing.getId();
+
+        // Phase 8.1.1 FIX #12: Atomic transition FAILED -> QUEUED to prevent concurrent retry race
+        if (mongoTemplate != null) {
+            Query query = Query.query(Criteria.where("_id").is(executionId)
+                    .and("status").is(ExecutionStatus.FAILED)
+                    .and("startedAt").is(null));
+            Update update = new Update()
+                    .set("status", ExecutionStatus.QUEUED)
+                    .set("queuedAt", Instant.now())
+                    .unset("error")
+                    .unset("completedAt")
+                    .unset("durationMs")
+                    .unset("workerId")
+                    .unset("leaseUntil");
+            UpdateResult result = mongoTemplate.updateFirst(query, update, WorkflowExecution.class);
+            if (result.getModifiedCount() == 0) {
+                log.info("Concurrent webhook retry already claimed/transitioned for executionId={}", executionId);
+                WorkflowExecution current = executionRepository.findById(executionId).orElse(existing);
+                return new ExecuteWorkflowResponse(current.getId(), workflow.getId(), current.getStatus());
+            }
+        } else {
+            existing.markRequeued();
+            existing = executionRepository.save(existing);
+        }
 
         if (executionQueue == null) {
             log.error("ExecutionQueue is not configured; cannot retry webhook execution: {}", executionId);
             existing.markQueueFailed("Execution queue service is unavailable");
             executionRepository.save(existing);
-            throw new QueueSubmissionException("Execution queue is not configured");
+            throw new QueueSubmissionException(executionId, "Execution queue is not configured");
         }
 
         ExecutionJob job = new ExecutionJob(executionId, workflow.getId(), workflow.getUserId(), triggerType, Instant.now());
@@ -265,7 +381,7 @@ public class WorkflowExecutionService {
             log.error("Failed to re-enqueue webhook job for executionId: {}", executionId, ex);
             existing.markQueueFailed("Failed to queue webhook execution");
             executionRepository.save(existing);
-            throw new QueueSubmissionException("Failed to enqueue webhook execution", ex);
+            throw new QueueSubmissionException(executionId, "Failed to enqueue webhook execution", ex);
         }
 
         return ExecuteWorkflowResponse.queued(executionId, workflow.getId());

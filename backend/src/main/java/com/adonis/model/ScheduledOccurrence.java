@@ -28,17 +28,33 @@ public class ScheduledOccurrence {
 
     private String executionId;
 
+    @Indexed
+    private ScheduledOccurrenceStatus status = ScheduledOccurrenceStatus.CLAIMED;
+
     private Instant createdAt;
+
+    private Instant updatedAt;
+
+    private String errorMessage;
+
+    private int retryCount = 0;
 
     public ScheduledOccurrence() {
     }
 
     public ScheduledOccurrence(String id, String workflowId, Instant scheduledFireTime, String executionId, Instant createdAt) {
+        this(id, workflowId, scheduledFireTime, executionId, ScheduledOccurrenceStatus.CLAIMED, createdAt);
+    }
+
+    public ScheduledOccurrence(String id, String workflowId, Instant scheduledFireTime, String executionId,
+                               ScheduledOccurrenceStatus status, Instant createdAt) {
         this.id = id;
         this.workflowId = workflowId;
         this.scheduledFireTime = scheduledFireTime;
         this.executionId = executionId;
+        this.status = status != null ? status : ScheduledOccurrenceStatus.CLAIMED;
         this.createdAt = createdAt != null ? createdAt : Instant.now();
+        this.updatedAt = this.createdAt;
     }
 
     public static String buildOccurrenceKey(String workflowId, Instant scheduledFireTime) {
@@ -77,11 +93,49 @@ public class ScheduledOccurrence {
         this.executionId = executionId;
     }
 
+    public ScheduledOccurrenceStatus getStatus() {
+        return status;
+    }
+
+    public void setStatus(ScheduledOccurrenceStatus status) {
+        this.status = status;
+        this.updatedAt = Instant.now();
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
     }
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(Instant updatedAt) {
+        this.updatedAt = updatedAt;
+    }
+
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
+    public void setErrorMessage(String errorMessage) {
+        this.errorMessage = errorMessage;
+    }
+
+    public int getRetryCount() {
+        return retryCount;
+    }
+
+    public void setRetryCount(int retryCount) {
+        this.retryCount = retryCount;
+    }
+
+    public void incrementRetryCount() {
+        this.retryCount++;
+        this.updatedAt = Instant.now();
     }
 }

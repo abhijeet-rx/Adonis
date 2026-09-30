@@ -129,7 +129,7 @@ class AdonisSchedulerTest {
         assertEquals(scheduledTime, config.getLastScheduledFireTime());
         // Fix #11: Scheduler does NOT overwrite entire workflow
         verify(workflowRepository, never()).save(any());
-        verify(mongoTemplate).updateFirst(any(Query.class), any(Update.class), eq(Workflow.class));
+        verify(mongoTemplate, times(2)).updateFirst(any(Query.class), any(Update.class), eq(Workflow.class));
     }
 
     @Test
@@ -315,13 +315,20 @@ class AdonisSchedulerTest {
         // Targeted MongoDB update must be used
         ArgumentCaptor<Query> queryCaptor = ArgumentCaptor.forClass(Query.class);
         ArgumentCaptor<Update> updateCaptor = ArgumentCaptor.forClass(Update.class);
-        verify(mongoTemplate).updateFirst(queryCaptor.capture(), updateCaptor.capture(), eq(Workflow.class));
+        verify(mongoTemplate, times(2)).updateFirst(queryCaptor.capture(), updateCaptor.capture(), eq(Workflow.class));
 
-        assertTrue(queryCaptor.getValue().getQueryObject().containsKey("_id"));
-        assertEquals("wf-race-1", queryCaptor.getValue().getQueryObject().get("_id"));
+        // First update is atomic schedule verification
+        Query verifyQuery = queryCaptor.getAllValues().get(0);
+        assertTrue(verifyQuery.getQueryObject().containsKey("triggerConfig.cronExpression"));
+        assertEquals("0 */5 * * * *", verifyQuery.getQueryObject().get("triggerConfig.cronExpression"));
+        assertEquals(scheduledTime, verifyQuery.getQueryObject().get("triggerConfig.nextFireTime"));
 
-        // Verify that only triggerConfig fields and updatedAt are targeted, not name/description/nodes
-        var updateObj = updateCaptor.getValue().getUpdateObject();
+        // Second update is fire times advancement
+        Query fireTimesQuery = queryCaptor.getAllValues().get(1);
+        assertTrue(fireTimesQuery.getQueryObject().containsKey("_id"));
+        assertEquals("wf-race-1", fireTimesQuery.getQueryObject().get("_id"));
+
+        var updateObj = updateCaptor.getAllValues().get(1).getUpdateObject();
         var setObj = (org.bson.Document) updateObj.get("$set");
         assertNotNull(setObj);
         assertTrue(setObj.containsKey("triggerConfig.nextFireTime"));
@@ -370,4 +377,203 @@ class AdonisSchedulerTest {
         assertEquals(1, queuedCount);
         verify(executionService).enqueueScheduledExecution(eq(wf2), anyString(), eq(scheduledTime));
     }
+
+    // ==========================================
+    // Phase 8.1.1 Hardening Tests
+    // ==========================================
+
+    @Test
+    void processWorkflowSchedule_StaleSchedulerDecisionRace_ScheduleModifiedByUser_AbortsClaim() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-stale-1", "user-1", "Stale Test WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:05:01Z");
+
+        // Simulate user changed cron / nextFireTime in MongoDB between scheduler reading and claiming
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Workflow.class)))
+                .thenReturn(com.mongodb.client.result.UpdateResult.acknowledged(0, 0L, null));
+
+        boolean processed = scheduler.processWorkflowSchedule(workflow, now);
+
+        // Claim must fail, iteration must be abandoned
+        assertFalse(processed, "Must abandon iteration when schedule condition check finds modifiedCount = 0");
+        verify(executionService, never()).enqueueScheduledExecution(any(), any(), any());
+        verify(mongoTemplate, never()).insert(any(ScheduledOccurrence.class));
+        verify(scheduledOccurrenceRepository, never()).save(any());
+
+        // Schedule was NOT advanced
+        assertEquals(scheduledTime, config.getNextFireTime());
+
+        // Next scheduler tick: user changed cron to 18:00 UTC ("0 0 18 * * *")
+        WorkflowTriggerConfig updatedConfig = new WorkflowTriggerConfig("0 0 18 * * *", "UTC", null, null, false);
+        Workflow reloadedWorkflow = new Workflow("wf-stale-1", "user-1", "Stale Test WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, updatedConfig, Instant.now(), Instant.now());
+
+        // First initialization of updated workflow computes next fire time using new cron
+        scheduler.processWorkflowSchedule(reloadedWorkflow, now);
+        assertEquals(Instant.parse("2026-10-01T18:00:00Z"), updatedConfig.getNextFireTime());
+    }
+
+    @Test
+    void processWorkflowSchedule_ConcurrentSchedulers_ExactlyOneClaimsOccurrence() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-conc-1", "user-1", "Concurrent WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:05:01Z");
+
+        // Scheduler A wins the conditional claim and occurrence insert
+        when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
+                .thenReturn(ExecuteWorkflowResponse.queued("exec-conc-1", "wf-conc-1"));
+
+        boolean resultA = scheduler.processWorkflowSchedule(workflow, now);
+        assertTrue(resultA);
+        verify(executionService, times(1)).enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime));
+
+        // Scheduler B runs concurrently on the same workflow/time with its own loaded snapshot:
+        WorkflowTriggerConfig configB = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        configB.setNextFireTime(scheduledTime);
+        Workflow workflowB = new Workflow("wf-conc-1", "user-1", "Concurrent WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, configB, Instant.now(), Instant.now());
+
+        // MongoDB rejects occurrence insertion due to compound unique index
+        doThrow(new DuplicateKeyException("Duplicate occurrence key"))
+                .when(mongoTemplate).insert(any(ScheduledOccurrence.class));
+
+        // Existing occurrence is already ENQUEUED
+        String occurrenceKey = ScheduledOccurrence.buildOccurrenceKey("wf-conc-1", scheduledTime);
+        ScheduledOccurrence enqueuedOccurrence = new ScheduledOccurrence(
+                occurrenceKey, "wf-conc-1", scheduledTime, "exec-conc-1", ScheduledOccurrenceStatus.ENQUEUED, now
+        );
+        when(scheduledOccurrenceRepository.findById(occurrenceKey)).thenReturn(java.util.Optional.of(enqueuedOccurrence));
+
+        boolean resultB = scheduler.processWorkflowSchedule(workflowB, now);
+        assertFalse(resultB, "Second scheduler must not process or claim already enqueued occurrence");
+
+        // Execution service enqueueScheduledExecution must STILL have only been called once!
+        verify(executionService, times(1)).enqueueScheduledExecution(any(), any(), any());
+    }
+
+    @Test
+    void processWorkflowSchedule_RedisEnqueueFails_OccurrenceMarkedFailedRetryableAndNextFireNotAdvanced() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-redis-fail", "user-1", "Redis Fail WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:05:01Z");
+
+        // Simulate transient Redis failure during queue submission
+        when(executionService.enqueueScheduledExecution(eq(workflow), anyString(), eq(scheduledTime)))
+                .thenThrow(new com.adonis.queue.QueueSubmissionException("exec-fail-1", "Redis connection refused: transient error"));
+
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertFalse(result, "Must return false when enqueue fails");
+
+        // Verify occurrence is saved as FAILED_RETRYABLE with executionId
+        ArgumentCaptor<ScheduledOccurrence> occurrenceCaptor = ArgumentCaptor.forClass(ScheduledOccurrence.class);
+        verify(scheduledOccurrenceRepository).save(occurrenceCaptor.capture());
+        ScheduledOccurrence savedOccurrence = occurrenceCaptor.getValue();
+        assertEquals(ScheduledOccurrenceStatus.FAILED_RETRYABLE, savedOccurrence.getStatus());
+        assertEquals("exec-fail-1", savedOccurrence.getExecutionId());
+        assertTrue(savedOccurrence.getErrorMessage().contains("Redis connection refused"));
+
+        // Next fire time must NOT be advanced in workflow config or via fire-time update
+        assertEquals(scheduledTime, config.getNextFireTime(), "Workflow config nextFireTime must NOT advance on failure");
+        // Verify only 1 updateFirst was executed (the condition check), and NOT the fire-time advance update
+        ArgumentCaptor<Query> queryCaptor = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate, times(1)).updateFirst(queryCaptor.capture(), any(), eq(Workflow.class));
+        assertTrue(queryCaptor.getValue().getQueryObject().containsKey("triggerConfig.cronExpression"),
+                "Only schedule condition check query should be executed, no fire-time advance");
+    }
+
+    @Test
+    void processWorkflowSchedule_SubsequentTick_RecoversFailedRetryableOccurrenceWhenRedisAvailable() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-recover-1", "user-1", "Recover WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:05:05Z");
+
+        // Occurrence already exists as FAILED_RETRYABLE from previous failed tick
+        String occurrenceKey = ScheduledOccurrence.buildOccurrenceKey("wf-recover-1", scheduledTime);
+        ScheduledOccurrence failedOccurrence = new ScheduledOccurrence(
+                occurrenceKey, "wf-recover-1", scheduledTime, "exec-orig-1", ScheduledOccurrenceStatus.FAILED_RETRYABLE, now
+        );
+
+        doThrow(new DuplicateKeyException("Duplicate occurrence key"))
+                .when(mongoTemplate).insert(any(ScheduledOccurrence.class));
+        when(scheduledOccurrenceRepository.findById(occurrenceKey)).thenReturn(java.util.Optional.of(failedOccurrence));
+
+        // Redis is now available: retry succeeds
+        when(executionService.retryScheduledQueueSubmission("exec-orig-1", workflow, occurrenceKey))
+                .thenReturn(ExecuteWorkflowResponse.queued("exec-orig-1", "wf-recover-1"));
+
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertTrue(result, "Recovery must succeed when Redis is available");
+        verify(executionService).retryScheduledQueueSubmission("exec-orig-1", workflow, occurrenceKey);
+        verify(executionService, never()).enqueueScheduledExecution(any(), any(), any());
+
+        // Occurrence is marked ENQUEUED
+        ArgumentCaptor<ScheduledOccurrence> occurrenceCaptor = ArgumentCaptor.forClass(ScheduledOccurrence.class);
+        verify(scheduledOccurrenceRepository).save(occurrenceCaptor.capture());
+        assertEquals(ScheduledOccurrenceStatus.ENQUEUED, occurrenceCaptor.getValue().getStatus());
+        assertEquals("exec-orig-1", occurrenceCaptor.getValue().getExecutionId());
+
+        // Schedule is now advanced
+        assertEquals(Instant.parse("2026-10-01T10:10:00Z"), config.getNextFireTime());
+        assertEquals(scheduledTime, config.getLastScheduledFireTime());
+    }
+
+    @Test
+    void processWorkflowSchedule_DuplicateScheduler_RecoversFailedOccurrenceWithoutCreatingSecondExecution() {
+        WorkflowTriggerConfig config = new WorkflowTriggerConfig("0 */5 * * * *", "UTC", null, null, false);
+        Instant scheduledTime = Instant.parse("2026-10-01T10:05:00Z");
+        config.setNextFireTime(scheduledTime);
+
+        Workflow workflow = new Workflow("wf-dup-recover", "user-1", "Dup Recover WF", null, WorkflowStatus.ACTIVE,
+                List.of(), List.of(), WorkflowTriggerType.SCHEDULE, config, Instant.now(), Instant.now());
+
+        Instant now = Instant.parse("2026-10-01T10:05:10Z");
+
+        // Scheduler A failed Redis; occurrence is in DB as FAILED_RETRYABLE with executionId="exec-shared-1"
+        String occurrenceKey = ScheduledOccurrence.buildOccurrenceKey("wf-dup-recover", scheduledTime);
+        ScheduledOccurrence existingOccurrence = new ScheduledOccurrence(
+                occurrenceKey, "wf-dup-recover", scheduledTime, "exec-shared-1", ScheduledOccurrenceStatus.FAILED_RETRYABLE, now
+        );
+
+        // Scheduler B encounters duplicate key on insert
+        doThrow(new DuplicateKeyException("Duplicate occurrence key"))
+                .when(mongoTemplate).insert(any(ScheduledOccurrence.class));
+        when(scheduledOccurrenceRepository.findById(occurrenceKey)).thenReturn(java.util.Optional.of(existingOccurrence));
+
+        when(executionService.retryScheduledQueueSubmission("exec-shared-1", workflow, occurrenceKey))
+                .thenReturn(ExecuteWorkflowResponse.queued("exec-shared-1", "wf-dup-recover"));
+
+        // Scheduler B recovers the existing occurrence
+        boolean result = scheduler.processWorkflowSchedule(workflow, now);
+
+        assertTrue(result);
+        // Scheduler B must NOT create a new execution
+        verify(executionService, never()).enqueueScheduledExecution(any(), any(), any());
+        // Scheduler B must retry the EXISTING execution ID
+        verify(executionService).retryScheduledQueueSubmission("exec-shared-1", workflow, occurrenceKey);
+
+        assertEquals(ScheduledOccurrenceStatus.ENQUEUED, existingOccurrence.getStatus());
+    }
 }
+

@@ -14,5 +14,9 @@ public interface ScheduledOccurrenceRepository extends MongoRepository<Scheduled
 
     boolean existsByWorkflowIdAndScheduledFireTime(String workflowId, Instant scheduledFireTime);
 
+    java.util.List<ScheduledOccurrence> findByWorkflowIdAndStatus(String workflowId, com.adonis.model.ScheduledOccurrenceStatus status);
+
+    java.util.List<ScheduledOccurrence> findByStatus(com.adonis.model.ScheduledOccurrenceStatus status);
+
     long deleteByWorkflowId(String workflowId);
 }

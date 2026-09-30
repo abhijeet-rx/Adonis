@@ -519,13 +519,48 @@ Phase 8 and 8.1 introduce two production trigger producers (the centralized Cron
 6. **Thread Model & Scalability**:
    The scheduler uses a single background evaluation thread configured via Spring scheduling. It never executes workflows synchronously, but solely evaluates due workflows, claims occurrences in MongoDB, creates `QUEUED` execution records, and dispatches minimal `ExecutionJob` payloads to Redis Streams for consumption by the worker pool.
 
-### 10.3 Security Guarantees & Known Limitations
+### 10.4 Phase 8.1.1 — Scheduler Concurrency & Queue Failure Hardening
 
-- **Security Guarantees**:
-  - Deep redaction via `SecretRedactor` of sensitive headers (`Authorization`, `Cookie`, `X-Webhook-Secret`, etc.), API keys, bearer tokens, and credentials in trigger payloads.
-  - Constant-time secret comparison preventing side-channel timing attacks.
-  - Bounded request body size (default 1MB, returning HTTP 413) and bounded idempotency key length (max 256 chars, returning HTTP 400).
-- **Known Limitations**:
-  - Downtime occurrences are skipped under `DO_NOT_CATCH_UP`; workflows requiring backfilled catch-up processing must be triggered manually.
-  - SSRF protections for outgoing HTTP requests remain bounded by the private deployment perimeter; full private IP range blocking is scheduled for Phase 12.
+1. **Stale Scheduler Decision Race Prevention**:
+   The scheduler evaluates due occurrences against an in-memory workflow snapshot, but before claiming an occurrence or creating executions, it executes an atomic conditional verification query against MongoDB:
+   ```java
+   Query scheduleQuery = Query.query(
+       Criteria.where("_id").is(workflow.getId())
+           .and("status").is(WorkflowStatus.ACTIVE)
+           .and("triggerType").is(WorkflowTriggerType.SCHEDULE)
+           .and("triggerConfig.cronExpression").is(config.getCronExpression())
+           .and("triggerConfig.timezone").is(config.getTimezone())
+           .and("triggerConfig.nextFireTime").is(nextDue)
+   );
+   ```
+   If a user modified the cron expression, changed the timezone, altered the trigger type, or deactivated the workflow between the scheduler's read and claim steps, `claimCheck.getModifiedCount()` returns `0`. The scheduler immediately abandons the iteration without creating stale executions, claiming occurrences, or modifying fire times, leaving the next scheduler cycle to process the updated workflow state cleanly.
+
+2. **Scheduled Occurrence Reliability & Explicit Lifecycle**:
+   Every scheduled occurrence is uniquely identified by `(workflowId, scheduledFireTime)` enforced by a MongoDB compound unique index. `ScheduledOccurrence` tracks an explicit lifecycle:
+   - `CLAIMED`: The scheduler instance has successfully reserved the scheduled fire time; no other instance can create an execution for this time slot.
+   - `ENQUEUED`: The execution has been successfully dispatched to the Redis Streams queue (`ExecutionQueue.enqueue`).
+   - `FAILED_RETRYABLE`: The occurrence was claimed and an execution created, but Redis queue submission failed due to a transient infrastructure outage. The record stores the `executionId`, error message, and retry count, remaining fully recoverable.
+
+3. **Redis Outage Recovery & Deferred Schedule Advancement**:
+   A temporary Redis outage does **NOT** permanently consume or lose a scheduled occurrence:
+   - The workflow's `nextFireTime` is strictly **NOT** advanced when queue submission fails.
+   - The occurrence transitions to `FAILED_RETRYABLE` retaining its `executionId`.
+   - On subsequent scheduler ticks, the scheduler identifies the existing recoverable occurrence (or catches the unique index collision), reuses the existing `executionId`, and retries queue submission via `retryScheduledQueueSubmission`.
+   - Only when queue submission succeeds is the occurrence marked `ENQUEUED` and the workflow's `nextFireTime` advanced to the next future due time.
+   - **No Duplicate Executions**: At most one logical `WorkflowExecution` document is created per `(workflowId, scheduledFireTime)`. Retries re-enqueue the existing execution ID instead of instantiating new execution records.
+
+4. **Webhook Idempotency Concurrency Hardening**:
+   To prevent concurrent webhook client retries from simultaneously re-enqueuing duplicate jobs after a transient Redis outage, `WorkflowExecutionService.retryWebhookQueueSubmission` executes an atomic conditional update:
+   ```java
+   Query query = Query.query(Criteria.where("_id").is(executionId)
+       .and("status").is(ExecutionStatus.FAILED)
+       .and("startedAt").is(null));
+   Update update = new Update().set("status", ExecutionStatus.QUEUED).set("queuedAt", Instant.now()).unset("error");
+   UpdateResult result = mongoTemplate.updateFirst(query, update, WorkflowExecution.class);
+   ```
+   Only the first concurrent request modifies the document and enqueues to Redis Streams; concurrent requests observe `modifiedCount == 0` and return the current execution state without duplicate queue submissions.
+
+5. **Delivery & Execution Semantics**:
+   Adonis enforces **at-least-once delivery** across Redis Streams and trigger producers, combined with **idempotent execution claiming** (`findAndModify: QUEUED → RUNNING`) and renewable worker ownership leases (`leaseUntil`, `lastHeartbeatAt`). Under transient network retries or worker crash recovery, jobs may be re-delivered, but the atomic state transitions guarantee that only one worker executes the job. Adonis explicitly makes no claim of exactly-once external side effects.
+
 
