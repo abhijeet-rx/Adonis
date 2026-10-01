@@ -105,6 +105,13 @@ public class PromptInterpolator {
             String key = parts[i];
             if (pointer instanceof Map<?, ?> map) {
                 pointer = map.get(key);
+            } else if (pointer instanceof String str && (str.trim().startsWith("{") || str.trim().startsWith("["))) {
+                try {
+                    Map<?, ?> parsed = OBJECT_MAPPER.readValue(str, Map.class);
+                    pointer = parsed != null ? parsed.get(key) : null;
+                } catch (Exception e) {
+                    return "";
+                }
             } else {
                 return "";
             }

@@ -8,17 +8,17 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 9 — AI Nodes** *(Completed)*
+**Phase 10 — Automated Integration Testing + Testcontainers** *(Completed)*
 
-This phase adds native AI workflow execution nodes to Adonis, enabling intelligent text generation and structured data extraction powered by OpenAI and Google Gemini:
-- **Provider-Neutral SPI**: Pluggable provider abstraction (`AIProvider`, `AIRequest`, `AIResponse`, `AIUsage`, `AIProviderService`) supporting OpenAI and Google Gemini with standard Java 21 `HttpClient` (zero SDK bloat).
-- **Two Native Node Types**: `ai_text_generation` (text completion with model, system/user prompt, temperature, maxTokens) and `ai_structured_output` (strict JSON schema conformity validation).
-- **Prompt Variable Interpolation**: Dynamic prompt templating resolving expressions like `{{nodeId.output.property}}`, `{{nodeId.output}}`, and `{{input.key}}` with automatic credential sanitization.
-- **Strict JSON Schema Validation**: Pre-flight validation of schema definitions and runtime validation of model responses, automatically stripping markdown fences and failing the node with diagnostic field errors if malformed.
-- **Failures & Resilient Retries**: Integrated with existing `RetryPolicy` and `FailureClassifier` (HTTP 429 rate limits and 5xx are retryable; 4xx and schema failures fail fast).
-- **Zero-Trust Credential Security**: Server-side API keys (`OPENAI_API_KEY`, `GEMINI_API_KEY`); graph-level rejection of client-provided API keys; Gemini `x-goog-api-key` header authentication; deep redaction across execution history.
-- **Visual Node Builder**: React Flow custom nodes (`AITextGenerationNode`, `AIStructuredOutputNode`), palette drag-and-drop, and configuration drawer with provider/model presets, variable cheat sheet, and schema editor.
-
+This phase adds automated integration testing with real containerized dependencies using Testcontainers, validating the end-to-end infrastructure of Adonis without external API dependencies:
+- **Real Infrastructure Validation**: Replaced in-memory approximations in the integration test suite with genuine Docker containers running official `mongo:7.0` and `redis:7-alpine`.
+- **Redis Streams & Distributed Worker Verification**: Validated XADD, consumer groups (`XREADGROUP`), atomic MongoDB claiming (`findAndModify`), background heartbeat lease renewals, expired lease takeover, and PEL recovery via `XCLAIM`.
+- **Scheduler Concurrency & State Consistency**: Verified distributed lock safety, idempotency of fire time evaluation, schedule modification race resilience, and unique scheduled occurrence constraints under concurrent evaluation.
+- **Webhook Pipeline & Idempotency**: Verified capability URL routing, constant-time secret authentication, execution enqueuing, and `Idempotency-Key` deduplication under concurrent delivery.
+- **Execution & Retry Policies**: Verified HTTP node status matrix (2xx, 4xx, 5xx, timeouts) and AI node failure classification (429/5xx retryable vs 4xx non-retryable) with granular attempt history persisted in MongoDB.
+- **Local Mock HTTP Server**: Built-in zero-dependency JDK `HttpServer` mocking external HTTP targets, OpenAI (`/openai/chat/completions`), and Google Gemini (`/gemini/models`) endpoints with request inspection and canned response queues.
+- **Flagship End-to-End Test**: Complete pipeline validation: Webhook Trigger → HTTP Request Node → AI Node (429 rate limit retried to 200) → Structured JSON Schema Validation → Redis Stream → ExecutionWorker → MongoDB execution history with attempt tracking.
+- **Preserved Fast Feedback**: All existing unit and slice tests preserved; integration tests run seamlessly via `./mvnw clean test` with dynamic Docker detection and strict CI enforcement.
 
 ---
 
@@ -28,10 +28,10 @@ This phase adds native AI workflow execution nodes to Adonis, enabling intellige
 |---|---|
 | **Backend** | Java 21 LTS, Spring Boot 3.3.4, Maven, Spring Web, Spring Data MongoDB, Spring Data Redis, Spring Security 6, JJWT 0.12, BCrypt |
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, @xyflow/react, Lucide Icons |
-| **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017, collections: `users`, `workflows`, `workflow_executions`) |
+| **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017, collections: `users`, `workflows`, `workflow_executions`, `scheduled_occurrences`) |
 | **Queue & Cache** | Redis 7 Alpine (Docker container `adonis-redis` on port 6379, persistent appendonly storage `redis_data`) |
-| **Containerization** | Docker, Docker Compose (Multi-stage builds) |
-| **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc, pure-Java in-memory MongoServer, in-memory queue fallback |
+| **Containerization** | Docker, Docker Compose (Multi-stage builds), Testcontainers 1.19.8 |
+| **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc, Testcontainers (MongoDB 7.0, Redis 7 Alpine), Local Mock HTTP Server (`com.sun.net.httpserver`), Awaitility |
 | **CI/CD** | GitHub Actions |
 
 ---
@@ -371,9 +371,49 @@ Below is a complete, executable workflow demonstrating Webhook ingestion → AI 
 
 ---
 
+## Automated Integration Testing & Testcontainers (Phase 10)
+
+Adonis provides a comprehensive automated integration testing suite using [Testcontainers](https://testcontainers.com/) to validate real infrastructure interactions without depending on external network calls or cloud services:
+
+### Testing Architecture & Infrastructure
+- **Real Containerized Dependencies**: Integration tests run against official Docker containers for `mongo:7.0` and `redis:7-alpine` managed via Testcontainers singletons (`MongoTestContainer`, `RedisTestContainer`), eliminating discrepancies between in-memory mocks and production behavior.
+- **Dynamic Property Configuration**: Container network ports and credentials are dynamically bound to Spring Boot test contexts via `@DynamicPropertySource`.
+- **Zero External Network Dependencies**: External HTTP targets, OpenAI (`/openai/chat/completions`), and Google Gemini (`/gemini/models`) endpoints are served locally by `LocalMockHttpServer` (built using the JDK's standard `com.sun.net.httpserver.HttpServer`), supporting request recording, inspection, and queued mock responses.
+- **Docker Detection & CI Guard**: `DockerAvailability` dynamically checks Docker daemon availability. In local environments lacking Docker, integration tests gracefully skip via JUnit 5 `assumeTrue` while unit tests execute. In CI environments (`CI=true`), integration tests strictly assert Docker availability to ensure test coverage is never bypassed in automated pipelines.
+
+### Test Coverage Highlights
+- **Persistence (`MongoPersistenceIntegrationTest`)**: User normalization, unique email indexes, workflow ownership queries, execution pagination, granular attempt persistence, and scheduled occurrence unique compound constraints.
+- **Redis Streams (`RedisStreamsIntegrationTest`)**: Enqueueing via XADD, consumer group stream consumption (`XREADGROUP`), atomic state transitions (`QUEUED` → `RUNNING` → `SUCCESS`), and post-persistence message acknowledgement (`XACK`).
+- **Distributed Worker Leases (`WorkerLeaseIntegrationTest`)**: Worker ownership lease establishment, background heartbeat renewals, ownership loss detection, and expired lease takeover by peer workers.
+- **Worker Crash & PEL Recovery (`RedisPendingRecoveryIntegrationTest`)**: Unacknowledged message recovery from the Pending Entries List (PEL) via `XCLAIM` when a worker abruptly crashes.
+- **Idempotency & Concurrency (`DuplicateDeliveryIdempotencyIntegrationTest`)**: Atomic `findAndModify` claim race prevention ensuring at-least-once deliveries do not trigger duplicate graph executions.
+- **Failure Handling & Retries (`RetryPolicyIntegrationTest`)**: Exponential backoff, retry attempt recording in MongoDB, and downstream step skipping on exhausted attempts.
+- **HTTP Node Matrix (`HttpNodeIntegrationTest`)**: Parameterized test coverage across HTTP 200, 201, 204, 400..404, 408, 429, 500..504, request timeouts, and connection errors.
+- **AI Nodes & Providers (`AINodeIntegrationTest`)**: Provider execution (OpenAI, Gemini), token usage tracking, and failure classification distinguishing retryable errors (429, 5xx) from non-retryable errors (400, 401, 404).
+- **Structured Output & Schema Validation (`AIStructuredOutputIntegrationTest`)**: Strict JSON schema validation, automatic stripping of markdown code fences, malformed JSON rejection, and required field violation handling.
+- **Prompt Interpolation (`PromptInterpolationIntegrationTest`)**: Multi-hop output resolution (`{{http_1.output.body.name}}`), trigger input mapping (`{{input.key}}`), and fallback resolution for missing keys.
+- **Secret Redaction & Security (`SecretSecurityIntegrationTest`)**: Deep scrubbing of API keys (`sk-...`, `AIzaSy...`) and bearer tokens across execution history, attempts, and error logs in MongoDB.
+- **Scheduler Concurrency & State (`SchedulerIntegrationTest`, `SchedulerConcurrencyIntegrationTest`, `ScheduleModificationRaceIntegrationTest`)**: Next fire time calculations, concurrent scheduler race handling via `scheduled_occurrences` unique keys, and schedule modification race resilience.
+- **Webhooks & Idempotency (`WebhookIntegrationTest`, `WebhookIdempotencyIntegrationTest`)**: Capability URL verification, constant-time secret check, and `Idempotency-Key` deduplication under concurrent ingestion.
+- **Flagship E2E Test (`EndToEndWorkflowIntegrationTest`)**: Full pipeline verification: Webhook ingestion → HTTP Node (200) → AI Node (429 retry then 200) → JSON Schema Validation → Redis Stream → ExecutionWorker → MongoDB execution record with attempt history.
+
+### Running the Test Suite
+
+```bash
+cd backend
+
+# Run all unit tests and integration tests (requires Docker daemon for Testcontainers):
+./mvnw clean test
+
+# On Windows (PowerShell/CMD):
+.\mvnw.cmd clean test
+```
+
+---
+
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0 through Phase 9 — Operational)**:
+- **Current (Phase 0 through Phase 10 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users`, `workflows`, `workflow_executions`, and `scheduled_occurrences` collections)
@@ -413,10 +453,10 @@ Below is a complete, executable workflow demonstrating Webhook ingestion → AI 
   - Execution history panel with trigger badges (`MANUAL`, `SCHEDULE`, `WEBHOOK`), pagination, and enhanced execution results modal inspecting node inputs, outputs, errors, skipped steps, and attempt histories
   - Controlled frontend execution polling (every 1.5s) until terminal execution state (`SUCCESS` or `FAILED`)
   - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, `mongodb`, and `redis`
-  - Automated GitHub Actions CI pipeline (backend test & frontend build)
+  - Testcontainers integration test suite with real MongoDB 7.0 and Redis 7 Alpine containers, Local Mock HTTP Server, and full infrastructure verification
+  - Automated GitHub Actions CI pipeline (backend unit & integration tests & frontend build)
 
-- **Planned Functionality (Phases 10–12)**:
-  - Automated testing & Testcontainers (Planned for Phase 10)
+- **Planned Functionality (Phases 11–12)**:
   - Production Docker & deployment (Planned for Phase 11)
   - CI/CD & production hardening (Planned for Phase 12)
 
@@ -439,7 +479,7 @@ Below is a complete, executable workflow demonstrating Webhook ingestion → AI 
 - [x] **Phase 8.1.1 — Scheduler Concurrency & Queue Failure Hardening**
 - [x] **Phase 8.1.2 — Scheduler State Consistency Hardening**
 - [x] **Phase 9 — AI Nodes**
-- [ ] **Phase 10 — Automated Testing + Testcontainers**
+- [x] **Phase 10 — Automated Testing + Testcontainers**
 - [ ] **Phase 11 — Docker + Deployment**
 - [ ] **Phase 12 — GitHub Actions CI/CD + Production Hardening**
 

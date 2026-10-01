@@ -566,5 +566,44 @@ This document records the architectural and technical decisions made during the 
   - Positive: High performance, zero bloat, multi-provider extensibility, unified error handling and retry mechanics, bulletproof credential safety, and first-class developer visual experience.
   - Trade-off: Advanced JSON schema keywords (e.g., `oneOf`, `anyOf`, regex patterns) are not evaluated by the lightweight custom validator, but standard object/array schemas are fully supported with zero external dependencies.
 
+---
+
+## ADR-027: Phase 10 — Testcontainers Integration Testing
+
+* **Status**: Accepted
+* **Date**: 2026-10-01
+* **Context**:
+  Adonis relies on distributed infrastructure components: MongoDB 7.0 for document persistence and compound index integrity, and Redis 7 Streams for distributed job coordination, consumer groups, pending entry lists (PEL), and worker lease heartbeats.
+  Previous phases validated business logic using unit and slice tests (`@MockBean`, pure-Java in-memory `MongoServer`, `InMemoryExecutionQueue`).
+  While fast and valuable, in-memory mocks cannot validate real-world production behaviors:
+  1. Real MongoDB collection indexes, partial unique index expressions (`triggerConfig.webhookPath`), and atomic compound index constraints on `scheduled_occurrences`.
+  2. Redis 7 Streams semantics (`XADD`, `XREADGROUP`, `XACK`, `XPENDING`, `XCLAIM`).
+  3. Distributed worker leasing, background heartbeat lease renewal, and expired lease takeover by peer workers.
+  4. Worker crash recovery from the Pending Entries List (PEL).
+  5. Concurrent scheduler execution races and state consistency.
+  6. Webhook ingestion pipelines with constant-time cryptographic secret verification and `Idempotency-Key` deduplication.
+  7. HTTP node and AI node execution without incurring costs or relying on external cloud endpoints (OpenAI, Gemini).
+* **Decision**:
+  - **Adopt Testcontainers for Containerized Dependencies**:
+    Integrated `org.testcontainers:testcontainers:1.19.8`, `testcontainers:mongodb`, and `testcontainers:junit-jupiter` in `backend/pom.xml`.
+  - **Singleton Container Lifecycle**:
+    Implemented `MongoTestContainer` (running official `mongo:7.0`) and `RedisTestContainer` (running official `redis:7-alpine`) as thread-safe singletons. Containers start once per test JVM run and gracefully terminate via JVM shutdown hooks and the Testcontainers Ryuk resource reaper, minimizing cold-start overhead.
+  - **Dynamic Configuration via `@DynamicPropertySource`**:
+    `AdonisIntegrationTest` base class dynamically injects container ports and local mock server URIs into Spring's environment properties (`spring.data.mongodb.uri`, `spring.data.redis.host`, `spring.data.redis.port`, `adonis.ai.openai.base-url`, `adonis.ai.gemini.base-url`), eliminating static port clashes.
+  - **Zero External Network Dependencies (`LocalMockHttpServer`)**:
+    Created an embedded mock server using the JDK's standard `com.sun.net.httpserver.HttpServer`. It mocks external HTTP targets, OpenAI (`/openai/chat/completions`), and Google Gemini (`/gemini/models`), recording request payloads/headers and serving deterministic or queued failure/success responses without requiring external cloud accounts or internet access.
+  - **Test Isolation & Clean State**:
+    `AdonisIntegrationTest` purges all MongoDB collections (`users`, `workflows`, `workflow_executions`, `scheduled_occurrences`) and truncates Redis Streams before each test execution, guaranteeing complete test independence.
+  - **Docker Detection & Strict CI Guard**:
+    `DockerAvailability` detects Docker daemon availability at test runtime. In local environments lacking Docker Desktop, integration tests gracefully skip via JUnit 5 `assumeTrue` while unit tests run. In CI environments (`CI=true`), integration tests strictly assert Docker availability, ensuring integration coverage is never silently bypassed in automated workflows.
+  - **Comprehensive Multi-Subsystem Coverage**:
+    Implemented 17 integration test classes spanning persistence, Redis Streams, worker leases, crash recovery, idempotency, retry backoff, HTTP/AI nodes, JSON schema validation, prompt interpolation, secret redaction, scheduler concurrency, webhook capability URLs, and a flagship end-to-end integration test.
+  - **100% Preservation of Existing Unit Tests**:
+    Retained all 380 unit and slice tests without modification or deletion.
+* **Consequences**:
+  - Positive: High confidence in production infrastructure, automated regression testing for distributed worker crashes and concurrency races, zero external API costs or flaky network calls, unified Maven build (`./mvnw clean test`).
+  - Trade-off: Running full integration tests requires a Docker daemon, increasing total test execution time compared to pure-JVM unit tests. Mitigated by container reuse (singletons) and running unit tests independently when Docker is absent.
+
+
 
 

@@ -82,4 +82,30 @@ class PromptInterpolatorTest {
         assertFalse(result.contains("sk-123456789012345678901234"));
         assertTrue(result.contains("[REDACTED]"));
     }
+
+    @Test
+    void testJsonStringTraversalInNodeOutput() {
+        ExecutionContext context = new ExecutionContext("exec-1", "wf-1", "user-1", Instant.now());
+
+        // HTTP node returns a raw JSON string in "body"
+        Map<String, Object> httpOutput = Map.of(
+                "body", "{\"name\": \"Abhi\", \"company\": \"Adonis\"}",
+                "statusCode", 200
+        );
+
+        NodeExecutionResult httpResult = NodeExecutionResult.success(
+                "http_1",
+                "http",
+                Instant.now(),
+                Instant.now(),
+                Map.of(),
+                httpOutput
+        );
+        context.recordNodeResult("http_1", httpResult);
+
+        String template = "Hello {{http_1.output.body.name}} from {{http_1.output.body.company}}!";
+        String result = PromptInterpolator.interpolate(template, Map.of(), context);
+
+        assertEquals("Hello Abhi from Adonis!", result);
+    }
 }

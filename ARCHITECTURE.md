@@ -16,9 +16,9 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-### 2. Current Architecture (Phase 9 Operational)
+### 2. Current Architecture (Phase 10 Operational)
 
-In Phase 9, the operational system topology adds a provider-neutral **AI Execution Layer** (`OpenAIProvider`, `GeminiProvider`, `PromptInterpolator`, `JsonSchemaValidator`) seamlessly integrated as standard `NodeExecutor` implementations within the unified execution pipeline:
+In Phase 10, the operational system topology integrates a comprehensive **Automated Integration Testing & Testcontainers Architecture** alongside the Phase 9 provider-neutral **AI Execution Layer** (`OpenAIProvider`, `GeminiProvider`, `PromptInterpolator`, `JsonSchemaValidator`):
 
 ### Trigger & Execution Layer Architecture
 
@@ -760,5 +760,103 @@ The `FailureClassifier` governs AI node retry behavior:
   `GeminiProvider` sends the key via `x-goog-api-key` header rather than URL query parameters, preventing key exposure in server access logs, network proxies, and debugging traces.
 - **Deep Redaction**:
   `SecretRedactor` scrubs OpenAI patterns (`sk-...`), Gemini patterns (`AIzaSy...`), and `x-goog-api-key` headers from all execution attempt traces, outputs, and log entries before persistence.
+
+---
+
+## 12. Automated Integration Testing Architecture (Phase 10 Operational)
+
+Phase 10 establishes a comprehensive automated integration testing architecture using [Testcontainers](https://testcontainers.com/), validating the end-to-end interactions of the real Adonis infrastructure (Spring Boot, MongoDB 7.0, Redis 7 Streams, ExecutionWorker leases, PEL recovery, Schedulers, Webhooks, and AI Nodes) without external network dependencies.
+
+### 12.1 Testing Philosophy: Real Infrastructure over Mocks
+
+Previous phases relied on slice tests with mocks (`@MockBean`) or pure-Java in-memory approximations (e.g. `MongoServer`, `InMemoryExecutionQueue`). While fast, in-memory mocks fail to catch:
+- MongoDB index violations, compound partial unique index semantics, and atomic `findAndModify` behavior.
+- Redis Streams semantics: Consumer group PEL tracking, idle time measurements, atomic XCLAIM, and atomic message acknowledgement (`XACK`).
+- Concurrency races between distributed scheduler nodes and worker lease heartbeat renewals.
+- End-to-end pipeline serialization, deserialization, and HTTP error classification.
+
+Phase 10 introduces a dual-pyramid testing model:
+1. **Unit & Slice Tests**: Fast, in-memory tests executing within seconds for tight feedback loops during development.
+2. **Containerized Integration Tests**: Tests running against authentic containerized services (`mongo:7.0` and `redis:7-alpine`) managed via Testcontainers, validating production-grade distributed behaviors.
+
+### 12.2 Integration Test Infrastructure Topology
+
+```text
+                      Spring Boot Test Context
+                    (AdonisIntegrationTest Base)
+                     │                        │
+       Dynamic Mongo Connection          Dynamic Redis Connection
+        (spring.data.mongodb.uri)        (spring.data.redis.host/port)
+                     │                        │
+                     ▼                        ▼
+           ┌───────────────────┐    ┌───────────────────┐
+           │ MongoDB Container │    │  Redis Container  │
+           │    (mongo:7.0)    │    │  (redis:7-alpine) │
+           │                   │    │                   │
+           │ - users           │    │ - Redis Streams   │
+           │ - workflows       │    │ - Consumer Groups │
+           │ - executions      │    │ - Worker Leases   │
+           │ - occurrences     │    │ - PEL (Pending)   │
+           └───────────────────┘    └───────────────────┘
+                     │                        │
+                     └───────────┬────────────┘
+                                 │
+                                 ▼
+                     ┌─────────────────────────┐
+                     │   LocalMockHttpServer   │
+                     │  (com.sun.net.httpserver│
+                     │                         │
+                     │ - /mock/http            │
+                     │ - /openai/chat/completions
+                     │ - /gemini/models        │
+                     └─────────────────────────┘
+```
+
+### 12.3 Core Testing Infrastructure Components
+
+- **`MongoTestContainer`**:
+  Singleton container running official `mongo:7.0`. Starts once per test JVM run and automatically shuts down via JVM shutdown hook and Ryuk resource reaper.
+- **`RedisTestContainer`**:
+  Singleton container running official `redis:7-alpine`. Exposes port 6379 dynamically mapped to a high-numbered host port.
+- **`AdonisIntegrationTest`**:
+  Abstract base class for all integration tests. Configures:
+  - `@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)`
+  - `@DynamicPropertySource` dynamically wiring container ports and local mock server URIs into Spring's `Environment`.
+  - Automated collection cleanup (`users`, `workflows`, `workflow_executions`, `scheduled_occurrences`) between test runs.
+  - Stream truncation/cleanup on `adonis:execution:stream` and DLQ streams.
+- **`LocalMockHttpServer`**:
+  Zero-dependency local HTTP server using Java's built-in `com.sun.net.httpserver.HttpServer`. Binds to an ephemeral port and provides:
+  - Outbound HTTP node mocking (`/mock/http`) with configurable status codes, bodies, and delays.
+  - OpenAI chat completion mocking (`/openai/chat/completions`) with model response fixtures and token usage statistics.
+  - Google Gemini mocking (`/gemini/models/{model}:generateContent`) with header inspection (`x-goog-api-key`).
+  - Recorded request inspection to verify headers, query parameters, and JSON payloads.
+  - Canned response queue to simulate transient errors (e.g. HTTP 429 followed by HTTP 200).
+- **`DockerAvailability`**:
+  Environment inspector detecting Docker socket availability. In environments where Docker is absent, integration tests gracefully skip via JUnit 5 `assumeTrue`. In CI environments (`CI=true`), integration tests strictly require Docker, ensuring no tests are silently skipped during pull request or deployment validation.
+
+### 12.4 Integration Test Suite Structure
+
+The Phase 10 test suite is organized into distinct subpackages under `com.adonis.integration`:
+
+| Package | Test Class | Core Verification |
+|---|---|---|
+| `persistence` | `MongoPersistenceIntegrationTest` | User normalization, unique email indexes, workflow ownership queries, execution pagination, granular attempt persistence, scheduled occurrence unique compound constraints. |
+| `queue` | `RedisStreamsIntegrationTest` | Redis Streams XADD enqueueing, consumer group message consumption (`XREADGROUP`), atomic state progression (`QUEUED` → `RUNNING` → `SUCCESS`), and explicit `XACK`. |
+| `queue` | `WorkerLeaseIntegrationTest` | Worker ownership lease creation, background heartbeat lease renewal, ownership loss detection, and expired lease takeover. |
+| `queue` | `RedisPendingRecoveryIntegrationTest` | Unacknowledged PEL message recovery via `XCLAIM` when an `ExecutionWorker` crashes mid-execution. |
+| `queue` | `DuplicateDeliveryIdempotencyIntegrationTest` | Atomic `findAndModify` claim race prevention ensuring at-least-once deliveries do not execute workflow graphs multiple times. |
+| `execution` | `RetryPolicyIntegrationTest` | Exponential backoff retry policies, attempt history recording in MongoDB, and downstream node skipping on exhausted retries. |
+| `execution` | `HttpNodeIntegrationTest` | Parameterized testing of HTTP status codes (200, 201, 204, 400..404, 408, 429, 500..504), connection timeouts, and network failures. |
+| `execution` | `AINodeIntegrationTest` | OpenAI and Gemini provider execution, token usage tracking, and failure classification (429/5xx retryable vs 400/401/404 non-retryable). |
+| `execution` | `AIStructuredOutputIntegrationTest` | Strict JSON schema conformity, automatic markdown fence stripping, and malformed JSON rejection. |
+| `execution` | `PromptInterpolationIntegrationTest` | Dynamic prompt templating resolving multi-hop upstream outputs (`{{http_1.output.body.name}}`) and trigger inputs (`{{input.key}}`). |
+| `execution` | `SecretSecurityIntegrationTest` | Zero-trust secret isolation and deep redaction of API keys and bearer tokens across MongoDB execution records and attempts. |
+| `scheduler` | `SchedulerIntegrationTest` | Next fire time computation, occurrence reservation, and scheduled execution through Redis Streams to completion. |
+| `scheduler` | `SchedulerConcurrencyIntegrationTest` | Multi-node scheduler concurrency race prevention via atomic compound constraints on `scheduled_occurrences`. |
+| `scheduler` | `ScheduleModificationRaceIntegrationTest` | Race-free atomic field updates ensuring concurrent scheduler cycles do not overwrite user graph or cron modifications. |
+| `webhook` | `WebhookIntegrationTest` | Capability URL routing, constant-time secret authentication, execution enqueuing, and lifecycle isolation. |
+| `webhook` | `WebhookIdempotencyIntegrationTest` | `Idempotency-Key` deduplication and atomic recovery under concurrent webhook deliveries. |
+| `e2e` | `EndToEndWorkflowIntegrationTest` | Flagship end-to-end integration: Webhook ingestion → HTTP Node (200) → AI Node (429 retry then 200) → Structured JSON Schema Validation → Redis Stream → ExecutionWorker → MongoDB execution history with attempt tracking. |
+
 
 
