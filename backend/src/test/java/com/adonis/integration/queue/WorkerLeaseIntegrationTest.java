@@ -51,7 +51,7 @@ class WorkerLeaseIntegrationTest extends AdonisIntegrationTest {
     @DisplayName("Heartbeat: renewLease extends leaseUntil and lastHeartbeatAt in real MongoDB")
     void heartbeat_RenewLease_ExtendsLeaseUntilAndLastHeartbeat() {
         Instant startTime = Instant.now().minusSeconds(10);
-        Instant initialLease = startTime.plusSeconds(30);
+        Instant initialLease = startTime.plusSeconds(5);
 
         WorkflowExecution execution = new WorkflowExecution("exec-heartbeat-1", "wf-hb", "user-hb",
                 ExecutionStatus.RUNNING, "MANUAL", startTime, null, null, java.util.List.of(), null);

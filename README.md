@@ -68,45 +68,70 @@ This phase adds automated integration testing with real containerized dependenci
 adonis/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml               # Automated CI pipeline for backend & frontend
+│       └── ci.yml                          # Automated CI pipeline for backend & frontend
 ├── backend/
-│   ├── .mvn/                    # Maven wrapper assets
+│   ├── .mvn/                               # Maven wrapper assets
 │   ├── src/
 │   │   ├── main/
 │   │   │   ├── java/com/adonis/
-│   │   │   │   ├── AdonisApplication.java   # Spring Boot entry point
-│   │   │   │   ├── config/                  # CORS and web configuration
-│   │   │   │   ├── controller/              # REST controllers (GET /api/health)
-│   │   │   │   ├── dto/                     # Data transfer objects
-│   │   │   │   ├── exception/               # Global exception handlers (reserved)
-│   │   │   │   ├── model/                   # Domain entities (reserved)
-│   │   │   │   ├── repository/              # Data access layer (reserved)
-│   │   │   │   ├── security/                # Authentication & JWT (reserved)
-│   │   │   │   └── service/                 # Business logic services (reserved)
+│   │   │   │   ├── AdonisApplication.java  # Spring Boot entry point
+│   │   │   │   ├── ai/                     # AI Provider SPI, OpenAI & Gemini providers, PromptInterpolator
+│   │   │   │   ├── config/                 # Security, CORS, Redis & async configuration
+│   │   │   │   ├── controller/             # REST controllers (Auth, Workflow, Execution, Webhook, Health)
+│   │   │   │   ├── dto/                    # API Request/Response records
+│   │   │   │   ├── exception/              # GlobalExceptionHandler and domain exceptions
+│   │   │   │   ├── execution/              # ExecutionEngine, topological sorter, validator, node executors
+│   │   │   │   ├── model/                  # MongoDB documents (User, Workflow, WorkflowExecution, Occurrence)
+│   │   │   │   ├── queue/                  # RedisExecutionQueue, ExecutionWorker, and lease management
+│   │   │   │   ├── repository/             # Spring Data MongoDB repositories
+│   │   │   │   ├── scheduler/              # AdonisScheduler cron evaluator and occurrence manager
+│   │   │   │   ├── security/               # JwtService, JwtAuthenticationFilter, UserPrincipal
+│   │   │   │   ├── service/                # Business logic services (Auth, User, Workflow, Execution)
+│   │   │   │   └── util/                   # SecretRedactor and utility classes
 │   │   │   └── resources/
-│   │   │       └── application.yml          # Backend configuration
+│   │   │       └── application.yml         # Backend configuration
 │   │   └── test/
-│   │       └── java/com/adonis/             # Context & health controller unit tests
-│   ├── mvnw / mvnw.cmd          # Maven wrapper scripts
-│   └── pom.xml                  # Maven project descriptor
+│   │       └── java/com/adonis/
+│   │           ├── integration/            # Phase 10 Testcontainers Integration Suite
+│   │           │   ├── e2e/                # Flagship End-to-End integration test
+│   │           │   ├── execution/          # HTTP node, AI node, schema, retry & secret tests
+│   │           │   ├── persistence/        # MongoDB CRUD, index constraints, ownership tests
+│   │           │   ├── queue/              # Redis Streams, worker leases, crash recovery, idempotency
+│   │           │   ├── scheduler/          # Cron evaluation, concurrency, state consistency tests
+│   │           │   ├── support/            # Base test class, DockerAvailability, LocalMockHttpServer
+│   │           │   └── webhook/            # Webhook routing, secret auth, idempotency tests
+│   │           ├── ai/                     # AI provider & prompt interpolation unit tests
+│   │           ├── controller/             # Controller slice tests (MockMvc)
+│   │           ├── execution/              # Engine, DAG validation & retry policy unit tests
+│   │           ├── queue/                  # Queue abstraction & worker unit tests
+│   │           ├── repository/             # Repository slice tests
+│   │           ├── scheduler/              # Scheduler unit & concurrency tests
+│   │           ├── security/               # JWT & authentication unit tests
+│   │           ├── service/                # Service layer unit tests
+│   │           └── util/                   # Redactor unit tests
+│   ├── mvnw / mvnw.cmd                     # Maven wrapper scripts
+│   └── pom.xml                             # Maven descriptor with Testcontainers dependencies
 ├── docker/
 │   ├── backend/
-│   │   └── Dockerfile           # Multi-stage Java 21 build
+│   │   └── Dockerfile                      # Multi-stage Java 21 build
 │   ├── frontend/
-│   │   └── Dockerfile           # Multi-stage Node 20 + Nginx build
+│   │   └── Dockerfile                      # Multi-stage Node 20 + Nginx build
 │   └── README.md
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx              # Landing / dashboard placeholder with live diagnostics
-│   │   ├── index.css            # Tailwind baseline & design tokens
-│   │   └── main.tsx             # React DOM root
+│   │   ├── components/
+│   │   │   └── workflow/                   # Visual workflow canvas (@xyflow/react), nodes & panels
+│   │   ├── services/                       # API clients (auth, workflow, execution, webhook)
+│   │   ├── App.tsx                         # Dashboard and workflow editor view
+│   │   ├── index.css                       # Tailwind styling & design tokens
+│   │   └── main.tsx                        # React DOM root
 │   ├── package.json
 │   ├── tailwind.config.js
 │   └── vite.config.ts
-├── ARCHITECTURE.md              # System design and component interaction flow
-├── DECISIONS.md                 # Architectural Decision Records (ADRs)
-├── docker-compose.yml           # Local multi-service orchestration
-└── README.md                    # Project documentation
+├── ARCHITECTURE.md                         # Architecture overview and design specifications
+├── DECISIONS.md                            # Architectural Decision Records (ADR-001 through ADR-027)
+├── docker-compose.yml                      # Local multi-service orchestration (Mongo + Redis + App)
+└── README.md                               # Project documentation
 ```
 
 ---

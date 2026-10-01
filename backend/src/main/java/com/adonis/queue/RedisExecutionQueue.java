@@ -27,10 +27,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 
 /**
  * Reliable Redis Streams-based implementation of ExecutionQueue.
@@ -123,16 +125,40 @@ public class RedisExecutionQueue implements ExecutionQueue {
                 return Optional.empty();
             }
         } catch (Exception ex) {
-            String msg = ex.getMessage();
-            if (msg != null && (msg.contains("NOGROUP") || msg.contains("no such key"))) {
+            if (isNoGroupException(ex)) {
+                log.info("Consumer group missing for [{}], reinitializing and retrying read once", streamKey);
                 groupInitialized.set(false);
                 ensureGroupExists();
+                try {
+                    Consumer consumer = Consumer.from(consumerGroup, consumerName);
+                    StreamOffset<String> streamOffset = StreamOffset.create(streamKey, ReadOffset.lastConsumed());
+                    Duration blockDuration = timeout != null ? timeout : Duration.ofSeconds(2);
+                    StreamReadOptions readOptions = StreamReadOptions.empty().count(1).block(blockDuration);
+                    List<MapRecord<String, String, String>> records = redisTemplate.<String, String>opsForStream()
+                            .read(consumer, readOptions, streamOffset);
+                    if (records != null && !records.isEmpty()) {
+                        MapRecord<String, String, String> record = records.get(0);
+                        String recordId = record.getId().getValue();
+                        String payload = record.getValue().get("payload");
+                        if (payload != null && !payload.isBlank()) {
+                            try {
+                                ExecutionJob job = objectMapper.readValue(payload, ExecutionJob.class);
+                                return Optional.of(new QueuedJobMessage(recordId, job, 1));
+                            } catch (JsonProcessingException ignored) {
+                            }
+                        }
+                    }
+                } catch (Exception retryEx) {
+                    log.warn("Retry read after NOGROUP recovery failed on stream [{}]: {}", streamKey, retryEx.getMessage());
+                }
                 return Optional.empty();
             }
             log.error("Error polling Redis stream [{}] with consumer [{}]", streamKey, consumerName, ex);
             throw new QueueException("Redis poll operation failed", ex);
         }
     }
+
+    private static final Pattern STREAM_ID_PATTERN = Pattern.compile("^\\d+-\\d+$");
 
     @Override
     public void acknowledge(String messageId) {
@@ -144,6 +170,14 @@ public class RedisExecutionQueue implements ExecutionQueue {
             log.debug("Acknowledged message [{}] in consumer group [{}] on stream [{}]",
                     messageId, consumerGroup, streamKey);
         } catch (Exception ex) {
+            String msg = ex.getMessage() != null ? ex.getMessage() : "";
+            if (ex.getCause() != null && ex.getCause().getMessage() != null) {
+                msg += " " + ex.getCause().getMessage();
+            }
+            if (msg.contains("Invalid stream ID")) {
+                log.warn("Ignored XACK for invalid stream ID [{}]: {}", messageId, msg);
+                return;
+            }
             log.error("Failed to acknowledge message [{}] on stream [{}]", messageId, streamKey, ex);
             throw new QueueException("Redis acknowledge operation failed", ex);
         }
@@ -205,6 +239,11 @@ public class RedisExecutionQueue implements ExecutionQueue {
                 }
             }
         } catch (Exception ex) {
+            if (isNoGroupException(ex)) {
+                groupInitialized.set(false);
+                ensureGroupExists();
+                return Collections.emptyList();
+            }
             log.error("Failed to query or claim pending messages from Redis stream [{}]", streamKey, ex);
         }
         return claimedMessages;
@@ -221,7 +260,7 @@ public class RedisExecutionQueue implements ExecutionQueue {
         }
     }
 
-    private void ensureGroupExists() {
+    public void ensureGroupExists() {
         if (groupInitialized.get()) {
             return;
         }
@@ -269,6 +308,24 @@ public class RedisExecutionQueue implements ExecutionQueue {
         } catch (Exception ex) {
             log.error("Failed to quarantine malformed message [{}]", recordId.getValue(), ex);
         }
+    }
+
+    public void resetGroupInitialization() {
+        groupInitialized.set(false);
+    }
+
+    private boolean isNoGroupException(Throwable t) {
+        while (t != null) {
+            String m = t.getMessage();
+            if (m != null) {
+                String upper = m.toUpperCase(Locale.ROOT);
+                if (upper.contains("NOGROUP") || upper.contains("NO SUCH KEY")) {
+                    return true;
+                }
+            }
+            t = t.getCause();
+        }
+        return false;
     }
 
     public String getStreamKey() {

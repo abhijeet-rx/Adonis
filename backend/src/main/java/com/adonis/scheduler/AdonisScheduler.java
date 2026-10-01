@@ -261,7 +261,8 @@ public class AdonisScheduler {
         if (!isNewClaim) {
             // Occurrence already exists in MongoDB
             ScheduledOccurrence existing = scheduledOccurrenceRepository.findById(occurrenceKey).orElse(null);
-            if (existing == null || existing.getStatus() == ScheduledOccurrenceStatus.ENQUEUED) {
+            if (existing == null || existing.getStatus() == ScheduledOccurrenceStatus.ENQUEUED
+                    || existing.getStatus() == ScheduledOccurrenceStatus.CLAIMED) {
                 log.info("Duplicate scheduled occurrence already claimed/enqueued: workflowId={}, occurrenceKey={}", workflow.getId(), occurrenceKey);
                 // Advance nextFireTime if the workflow in memory still points to this occurrence
                 if (nextDue.equals(config.getNextFireTime()) && calculatedNext != null) {
@@ -271,10 +272,9 @@ public class AdonisScheduler {
                 }
                 return false;
             }
-            if (existing.getStatus() == ScheduledOccurrenceStatus.FAILED_RETRYABLE
-                    || existing.getStatus() == ScheduledOccurrenceStatus.CLAIMED) {
+            if (existing.getStatus() == ScheduledOccurrenceStatus.FAILED_RETRYABLE) {
                 // Phase 8.1.1 FIX: Recover occurrence that previously failed queue submission
-                log.info("Recovering failed/claimed scheduled occurrence: workflowId={}, occurrenceKey={}, executionId={}",
+                log.info("Recovering failed scheduled occurrence: workflowId={}, occurrenceKey={}, executionId={}",
                         workflow.getId(), occurrenceKey, existing.getExecutionId());
                 return recoverAndEnqueueOccurrence(workflow, existing, nextDue, cron, nowZoned);
             }

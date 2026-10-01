@@ -16,7 +16,7 @@ import java.util.List;
                 name = "wf_webhook_path_idx",
                 def = "{'triggerConfig.webhookPath': 1}",
                 unique = true,
-                partialFilter = "{'triggerConfig.webhookPath': {'$exists': true, '$type': 'string', '$ne': null}}"
+                partialFilter = "{'triggerConfig.webhookPath': {'$exists': true, '$type': 'string'}}"
         )
 })
 public class Workflow {

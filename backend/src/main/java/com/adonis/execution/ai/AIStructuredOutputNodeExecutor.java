@@ -216,6 +216,7 @@ public class AIStructuredOutputNodeExecutor implements NodeExecutor {
 
             Map<String, Object> output = new LinkedHashMap<>();
             output.put("structured", structuredData);
+            output.put("parsedJson", structuredData);
             output.put("text", response.text());
             output.put("provider", response.provider());
             output.put("model", response.model());

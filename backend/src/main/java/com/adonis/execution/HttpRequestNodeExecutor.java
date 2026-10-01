@@ -37,7 +37,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
     public boolean supports(String nodeType) {
         if (nodeType == null) return false;
         String normalized = nodeType.trim().toLowerCase();
-        return "httprequest".equals(normalized) || "http-request".equals(normalized);
+        return "httprequest".equals(normalized) || "http-request".equals(normalized) || "http".equals(normalized);
     }
 
     @Override
@@ -108,9 +108,28 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
             }
         }
 
+        Duration requestTimeout = DEFAULT_TIMEOUT;
+        if (nodeData.containsKey("timeoutMs") && nodeData.get("timeoutMs") != null) {
+            try {
+                long ms = Long.parseLong(nodeData.get("timeoutMs").toString().trim());
+                if (ms > 0) {
+                    requestTimeout = Duration.ofMillis(ms);
+                }
+            } catch (Exception ignored) {
+            }
+        } else if (nodeData.containsKey("timeout") && nodeData.get("timeout") != null) {
+            try {
+                long ms = Long.parseLong(nodeData.get("timeout").toString().trim());
+                if (ms > 0) {
+                    requestTimeout = Duration.ofMillis(ms);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(uri)
-                .timeout(DEFAULT_TIMEOUT)
+                .timeout(requestTimeout)
                 .method(method, bodyPublisher);
 
         // Headers
@@ -181,7 +200,7 @@ public class HttpRequestNodeExecutor implements NodeExecutor {
                     startedAt,
                     Instant.now(),
                     recordedInput,
-                    "HTTP request timed out after " + DEFAULT_TIMEOUT.toSeconds() + "s: " + (e.getMessage() != null ? e.getMessage() : "timeout")
+                    "HTTP request timed out after " + requestTimeout.toMillis() + "ms: " + (e.getMessage() != null ? e.getMessage() : "timeout")
             );
         } catch (java.net.ConnectException e) {
             return NodeExecutionResult.failure(

@@ -120,7 +120,7 @@ public final class TestDataFactory {
 
     public static Workflow createScheduledWorkflow(String userId, String name, String cronExpression, String timezone) {
         WorkflowNode trigger = createTriggerNode("trigger_1");
-        WorkflowNode http = createHttpNode("http_1", "http://localhost:8080/health", "GET", Map.of(), null);
+        WorkflowNode http = createHttpNode("http_1", AdonisIntegrationTest.mockHttpServer.getHttpEndpointUrl(), "GET", Map.of(), null);
         WorkflowEdge edge = createEdge("trigger_1", "http_1");
 
         WorkflowTriggerConfig config = new WorkflowTriggerConfig(cronExpression, timezone, null, null, false);
@@ -142,7 +142,7 @@ public final class TestDataFactory {
 
     public static Workflow createWebhookWorkflow(String userId, String name, String webhookPath, String secret) {
         WorkflowNode trigger = createTriggerNode("trigger_1");
-        WorkflowNode http = createHttpNode("http_1", "http://localhost:8080/health", "GET", Map.of(), null);
+        WorkflowNode http = createHttpNode("http_1", AdonisIntegrationTest.mockHttpServer.getHttpEndpointUrl(), "GET", Map.of(), null);
         WorkflowEdge edge = createEdge("trigger_1", "http_1");
 
         String secretHash = secret != null ? WorkflowTriggerConfig.hashSecret(secret) : null;

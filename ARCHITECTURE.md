@@ -107,29 +107,50 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 
 | Subsystem / Component | Current Status | Milestone |
 |---|---|---|
-| **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Completed) |
-| **Spring Boot 3.3 REST Baseline** | **Operational** (`GET /api/health`) | Phase 0 (Completed) |
-| **React + TypeScript UI Shell** | **Operational** (Landing & Diagnostics) | Phase 0 (Completed) |
-| **MongoDB Persistence** | **Operational** (Documents `User`, `Workflow`, `WorkflowExecution`, `ScheduledOccurrence`) | Phase 1, 2, 3, 5 & 8 (Completed) |
-| **Authentication & User Management** | **Operational** (Stateless JWT + BCrypt) | Phase 1 (Completed) |
-| **Protected User Profile API** | **Operational** (`GET /api/users/me`) | Phase 1 (Completed) |
-| **Workflow CRUD APIs** | **Operational** (`POST/GET/PUT/DELETE /api/workflows`) | Phase 2 (Completed) |
-| **React Flow Visual Canvas** | **Operational** (`@xyflow/react` v12 visual builder) | Phase 3 (Completed) |
-| **Workflow Execution Engine** | **Operational** (Topological DAG, fail-fast core) | Phase 4 (Completed) |
-| **Execution History & Logs** | **Operational** (Persistent records, skipped nodes, redacting, pagination) | Phase 5 (Completed) |
-| **Retries & Failure Handling** | **Operational** (Exponential backoff, failure classification, attempt tracking) | Phase 6 (Completed) |
-| **Redis Asynchronous Workers** | **Operational** (Redis 7, ExecutionQueue, ExecutionWorker, 202 Accepted, Idempotency) | Phase 7 (Completed) |
-| **Scheduling & Webhooks** | **Operational** (Cron, Timezones, Capability URLs, Secret Auth, Idempotency) | Phase 8 (Completed) |
-| **AI Intelligent Nodes** | **Operational** (`ai_text_generation`, `ai_structured_output`, OpenAI & Gemini SPI) | Phase 9 (Completed) |
-| **Automated Testing & Testcontainers** | *NOT Implemented* | Phase 10 (Testcontainers deferred to Phase 10) |
-| **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |
-| **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |**AI Intelligent Nodes** | *NOT Implemented* | Phase 9 (AI Nodes) |
-| **Automated Testing & Testcontainers** | *NOT Implemented* | Phase 10 (Testcontainers deferred to Phase 10) |
-| **Production Docker Deployment** | *NOT Implemented* | Phase 11 (Docker + Deployment) |
-| **CI/CD & Production Hardening** | *NOT Implemented* | Phase 12 (Production Hardening) |
+| **Core Monorepo & Build Pipeline** | **Operational** | Phase 0 (Complete) |
+| **Spring Boot 3.3 REST Baseline** | **Operational** (`GET /api/health`) | Phase 0 (Complete) |
+| **React + TypeScript UI Shell** | **Operational** (Landing & Diagnostics) | Phase 0 (Complete) |
+| **MongoDB Persistence** | **Operational** (Documents `User`, `Workflow`, `WorkflowExecution`, `ScheduledOccurrence`) | Phase 1, 2, 3, 5 & 8 (Complete) |
+| **Authentication & User Management** | **Operational** (Stateless JWT + BCrypt) | Phase 1 (Complete) |
+| **Protected User Profile API** | **Operational** (`GET /api/users/me`) | Phase 1 (Complete) |
+| **Workflow CRUD APIs** | **Operational** (`POST/GET/PUT/DELETE /api/workflows`) | Phase 2 (Complete) |
+| **React Flow Visual Canvas** | **Operational** (`@xyflow/react` v12 visual builder) | Phase 3 (Complete) |
+| **Workflow Execution Engine** | **Operational** (Topological DAG, fail-fast core) | Phase 4 (Complete) |
+| **Execution History & Logs** | **Operational** (Persistent records, skipped nodes, redacting, pagination) | Phase 5 & 5.1 (Complete) |
+| **Retries & Failure Handling** | **Operational** (Exponential backoff, failure classification, attempt tracking) | Phase 6 & 6.1 (Complete) |
+| **Redis Asynchronous Workers & Leases** | **Operational** (Redis 7 Streams, ExecutionQueue, ExecutionWorker, 202 Accepted, Worker Leases, PEL Recovery) | Phase 7, 7.1 & 7.1.1 (Complete) |
+| **Scheduling & Webhooks** | **Operational** (Cron, Timezones, Capability URLs, Secret Auth, Idempotency, Concurrency Hardening, State Consistency) | Phase 8, 8.1, 8.1.1 & 8.1.2 (Complete) |
+| **AI Intelligent Nodes** | **Operational** (`ai_text_generation`, `ai_structured_output`, OpenAI & Gemini SPI, Prompt Interpolation, Schema Validation) | Phase 9 (Complete) |
+| **Automated Testing & Testcontainers** | **Operational** (Real MongoDB 7.0 & Redis 7-alpine Testcontainers, LocalMockHttpServer, 17 Integration Suites, CI Enforcement) | Phase 10 (Complete) |
+| **Production Docker Deployment** | *Planned* | Phase 11 (Planned) |
+| **CI/CD & Production Hardening** | *Planned* | Phase 12 (Planned) |
 
-> **Explicit Boundary & Design Principles**:
-> - **In-Process & Synchronous Execution**: In Phase 6, execution remains strictly synchronous and in-process within the HTTP request lifecycle. Retries and exponential backoff are performed synchronously via pluggable `RetryDelayStrategy` (defaulting to `Thread.sleep` in production, non-blocking in tests). No background workers, asynchronous queues, job runners, Redis, or Kafka are introduced (deferred to Phase 7).
+### Phase Status Overview
+
+- **Phase 0** — Complete: Monorepo, Spring Boot & React baselines, Docker Compose skeletons
+- **Phase 1** — Complete: Authentication, User Management & MongoDB Persistence
+- **Phase 2** — Complete: Workflow CRUD APIs & Ownership Scoping
+- **Phase 3** — Complete: React Flow Visual Workflow Builder & Node Palette
+- **Phase 4** — Complete: Workflow Execution Engine & Topological Sorter
+- **Phase 5** — Complete: Execution History, Step Status & Run Logs
+- **Phase 5.1** — Complete: Execution Security & Secret Redaction
+- **Phase 6** — Complete: Step-Level Retries & Error Handling
+- **Phase 6.1** — Complete: Node Attempt History & UI Execution Visualizer
+- **Phase 7** — Complete: Asynchronous Execution Engine with Redis Streams
+- **Phase 7.1** — Complete: Worker Reliability & Pending Message Recovery (PEL)
+- **Phase 7.1.1** — Complete: Worker Lease Heartbeats & Dead Worker Detection
+- **Phase 8** — Complete: Workflow Scheduling & Webhook Triggers
+- **Phase 8.1** — Complete: Trigger Reliability & Hardening
+- **Phase 8.1.1** — Complete: Scheduler Concurrency & Queue Failure Hardening
+- **Phase 8.1.2** — Complete: Scheduler State Consistency Hardening
+- **Phase 9** — Complete: AI Intelligent Nodes (OpenAI & Gemini SPI)
+- **Phase 10** — Complete: Testcontainers Integration Testing (MongoDB 7.0 + Redis 7-alpine)
+- **Phase 11** — Planned: Production Docker Deployment
+- **Phase 12** — Planned: CI/CD & Production Hardening
+
+> **Historical Note (Phase 6 In-Process Execution)**:
+> - In Phase 6, execution was initially synchronous and in-process within the HTTP request lifecycle. Retries and exponential backoff were performed synchronously via pluggable `RetryDelayStrategy`.
+> - In Phase 7 and beyond, this execution engine is orchestrated asynchronously by distributed `ExecutionWorker` processes consuming from Redis Streams, with renewable worker leases, background heartbeats, and PEL crash recovery.
 > - **Failure Classification & Fast Fail**: Failures are classified via `FailureClassifier`. Non-retryable errors (e.g. HTTP 400, 401, 403, 404, invalid URLs) abort retries immediately and fail fast. Retryable errors (e.g. HTTP 408, 429, 500, 502, 503, 504, connection timeouts, refused connections) trigger exponential backoff up to `maxRetries` (retries *after* initial attempt).
 > - **Granular Attempt Tracking & Persistence**: Every attempt executed for a node is recorded in `NodeExecutionAttempt` (attempt number, status, timestamps, duration, input, output, error) and persisted within `NodeExecution.attempts` in MongoDB.
 > - **Secret Redaction**: Inputs, outputs, and errors are deeply sanitized across every attempt prior to persistence and API response via `SecretRedactor`.
@@ -208,12 +229,13 @@ Each workflow execution document in MongoDB (`workflow_executions` collection) r
 ```mermaid
 graph TD
     subgraph Client["Client Tier (Operational)"]
-        UI["React 19 + TypeScript SPA<br/>(Auth, Workflow CRUD, Visual Canvas, Execution Inspector & History Panel)"]
+        UI["React 19 + TypeScript SPA<br/>(Auth, Workflow CRUD, Visual Canvas, Execution Inspector, AI Nodes & History Panel)"]
     end
 
     subgraph Gateway["API & Ingress Tier (Operational)"]
-        API["Spring Boot 3.3 REST API<br/>(/api/health, /api/auth/*, /api/users/me, /api/workflows/*, /api/executions/*)"]
-        AUTH["Spring Security & JWT Filter<br/>(Stateless Bearer token validation)"]
+        API["Spring Boot 3.3 REST API<br/>(/api/health, /api/auth/*, /api/users/me, /api/workflows/*, /api/executions/*, /api/webhooks/*)"]
+        AUTH["Spring Security & JWT Filter<br/>(Stateless Bearer token validation & Webhook permitAll)"]
+        SCHEDULER["AdonisScheduler<br/>(Cron evaluator & Occurrence Manager)"]
     end
 
     subgraph ServiceLayer["Service & Business Logic (Operational)"]
@@ -221,18 +243,23 @@ graph TD
         USER_SVC["UserService (Profile retrieval)"]
         WF_SVC["WorkflowService (CRUD & Ownership Scoping)"]
         EXEC_SVC["WorkflowExecutionService (Persistence, Orchestration & History)"]
+        QUEUE["ExecutionQueue & RedisExecutionQueue<br/>(XADD, Consumer Groups, PEL Recovery)"]
+        WORKER["ExecutionWorker Pool<br/>(Atomic Claim, Leases & Heartbeats)"]
         ENGINE["WorkflowExecutionEngine (Topological Sequential Runner)"]
-        VALIDATOR["WorkflowExecutionValidator (7-Rule DAG Validation)"]
+        VALIDATOR["WorkflowExecutionValidator (DAG & Schema Validation)"]
+        AI_LAYER["AI Provider Layer<br/>(OpenAI, Gemini, Prompt Interpolation)"]
         REDACTOR["SecretRedactor (Recursive Credential Sanitization)"]
     end
 
-    subgraph Storage["Data Tier (Operational)"]
-        MONGO[("MongoDB 7.0<br/>(Collections: users, workflows, workflow_executions)")]
+    subgraph Storage["Data & Infrastructure Tier (Operational)"]
+        MONGO[("MongoDB 7.0<br/>(users, workflows, workflow_executions, scheduled_occurrences)")]
+        REDIS[("Redis 7-alpine Streams<br/>(Stream: adonis:execution:stream)")]
+        TESTCONTAINERS["Testcontainers Integration Infrastructure<br/>(MongoDB 7.0 + Redis 7-alpine Containers)"]
     end
 
-    subgraph Deferred["Deferred Subsystems (NOT Implemented)"]
-        REDIS[("Redis Task Queue & Workers (Planned Phase 7)")]
-        AI["AI Provider Integrations (Planned Phase 9)"]
+    subgraph Planned["Deferred Subsystems (Planned)"]
+        DOCKER_PROD["Production Container Deployment (Phase 11)"]
+        PROD_HARDENING["Production Hardening & CI/CD (Phase 12)"]
     end
 
     UI -->|HTTP / JSON| API
@@ -241,13 +268,20 @@ graph TD
     AUTH --> USER_SVC
     AUTH --> WF_SVC
     AUTH --> EXEC_SVC
-    EXEC_SVC --> VALIDATOR
-    EXEC_SVC --> ENGINE
-    EXEC_SVC --> REDACTOR
+    SCHEDULER --> EXEC_SVC
+    EXEC_SVC --> QUEUE
+    QUEUE --> REDIS
+    REDIS --> WORKER
+    WORKER --> VALIDATOR
+    WORKER --> ENGINE
+    ENGINE --> AI_LAYER
+    WORKER --> REDACTOR
     AUTH_SVC --> MONGO
     USER_SVC --> MONGO
     WF_SVC --> MONGO
     EXEC_SVC --> MONGO
+    SCHEDULER --> MONGO
+    WORKER --> MONGO
 ```
 
 ---
@@ -255,7 +289,7 @@ graph TD
 ## 5. Current Request Flows
 
 ```
-[Browser / React App] 
+[Browser / External Caller] 
       │
       ├── POST /api/auth/register             ──> Validates input, hashes password (BCrypt), persists User to MongoDB, returns JWT
       ├── POST /api/auth/login                ──> Verifies credentials with BCrypt, returns JWT
@@ -265,7 +299,9 @@ graph TD
       ├── GET  /api/workflows/{id}            ──> Authenticated via JWT, queries findByIdAndUserId, returns 404 on cross-user
       ├── PUT  /api/workflows/{id}            ──> Authenticated via JWT, updates mutable fields, refreshes updatedAt, returns 404 on cross-user
       ├── DELETE /api/workflows/{id}          ──> Authenticated via JWT, deletes own workflow, returns 204 (404 on cross-user)
-      ├── POST /api/workflows/{id}/execute    ──> Authenticated via JWT, verifies ownership, validates DAG, persists RUNNING record, executes nodes, redacts secrets, persists outcome (SUCCESS/FAILED + SKIPPED nodes), returns WorkflowExecutionResult
+      ├── POST /api/workflows/{id}/execute    ──> Authenticated via JWT, verifies ownership, creates QUEUED record, enqueues to Redis Streams, returns 202 Accepted (asynchronously processed by ExecutionWorker)
+      ├── POST /api/webhooks/{webhookPath}    ──> Public capability URL, verifies secret & idempotency, enqueues to Redis Streams, returns 202 Accepted
+      ├── POST /api/workflows/{id}/webhook/regenerate ──> Authenticated via JWT, generates new capability path & secret
       ├── GET  /api/workflows/{id}/executions ──> Authenticated via JWT, verifies workflow ownership, queries paginated execution summaries (newest first)
       ├── GET  /api/executions/{executionId}  ──> Authenticated via JWT, queries findByIdAndUserId, returns full node-by-node execution record (404 on cross-user)
       ├── GET  /api/executions                ──> Authenticated via JWT, returns paginated execution summaries for authenticated user

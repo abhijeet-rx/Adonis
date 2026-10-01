@@ -26,7 +26,7 @@ public class TriggerNodeExecutor implements NodeExecutor {
                 ? triggerContext.triggerType().name().toLowerCase()
                 : nodeData.getOrDefault("triggerType", "manual").toString().toLowerCase();
 
-        Map<String, Object> output = new LinkedHashMap<>();
+        Map<String, Object> output = new LinkedHashMap<>(nodeData);
         output.put("trigger", triggerName);
         output.put("type", triggerContext != null ? triggerContext.triggerType().name() : "MANUAL");
         output.put("timestamp", startedAt.toString());

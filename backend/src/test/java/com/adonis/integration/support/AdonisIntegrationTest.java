@@ -9,6 +9,7 @@ import com.adonis.model.Workflow;
 import com.adonis.model.WorkflowExecution;
 import com.adonis.queue.ExecutionQueue;
 import com.adonis.queue.ExecutionWorker;
+import com.adonis.queue.RedisExecutionQueue;
 import com.adonis.repository.ScheduledOccurrenceRepository;
 import com.adonis.repository.UserRepository;
 import com.adonis.repository.WorkflowExecutionRepository;
@@ -43,6 +44,10 @@ public abstract class AdonisIntegrationTest {
 
     protected static final LocalMockHttpServer mockHttpServer = new LocalMockHttpServer();
 
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(mockHttpServer::stop));
+    }
+
     public static final String TEST_STREAM_KEY = "adonis:integration:stream";
     public static final String TEST_CONSUMER_GROUP = "adonis-integration-workers";
 
@@ -64,7 +69,8 @@ public abstract class AdonisIntegrationTest {
 
     @AfterAll
     public static void teardownSharedInfrastructure() {
-        mockHttpServer.stop();
+        // Keep mockHttpServer running across test classes sharing the Spring context.
+        // It is stopped automatically on JVM shutdown hook.
     }
 
     @DynamicPropertySource
@@ -96,7 +102,8 @@ public abstract class AdonisIntegrationTest {
         registry.add("adonis.jwt.secret", () -> "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970");
         registry.add("adonis.jwt.expiration-ms", () -> 86400000);
         registry.add("adonis.worker.enabled", () -> "false");
-        registry.add("adonis.scheduler.enabled", () -> "false");
+        registry.add("adonis.scheduler.enabled", () -> "true");
+        registry.add("adonis.scheduler.polling-interval-ms", () -> 86400000);
         registry.add("adonis.worker.stream-name", () -> TEST_STREAM_KEY);
         registry.add("adonis.worker.consumer-group", () -> TEST_CONSUMER_GROUP);
         registry.add("adonis.worker.poll-timeout-ms", () -> 500);
@@ -145,7 +152,7 @@ public abstract class AdonisIntegrationTest {
     @Autowired
     protected ExecutionWorker worker;
 
-    @Autowired
+    @Autowired(required = false)
     protected AdonisScheduler scheduler;
 
     @Autowired
@@ -176,6 +183,10 @@ public abstract class AdonisIntegrationTest {
             try {
                 redisTemplate.delete(TEST_STREAM_KEY);
                 redisTemplate.delete(TEST_STREAM_KEY + ":dlq");
+                if (queue instanceof RedisExecutionQueue redisQueue) {
+                    redisQueue.resetGroupInitialization();
+                    redisQueue.ensureGroupExists();
+                }
             } catch (Exception ignored) {
             }
         }

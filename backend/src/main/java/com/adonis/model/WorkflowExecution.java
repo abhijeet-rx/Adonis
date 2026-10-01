@@ -19,7 +19,7 @@ import java.util.Map;
 @CompoundIndexes({
         @CompoundIndex(name = "wf_user_started_idx", def = "{'workflowId': 1, 'userId': 1, 'startedAt': -1}"),
         @CompoundIndex(name = "user_started_idx", def = "{'userId': 1, 'startedAt': -1}"),
-        @CompoundIndex(name = "wf_idempotency_idx", def = "{'workflowId': 1, 'idempotencyKey': 1}", unique = true, partialFilter = "{'idempotencyKey': {'$exists': true, '$ne': null}}")
+        @CompoundIndex(name = "wf_idempotency_idx", def = "{'workflowId': 1, 'idempotencyKey': 1}", unique = true, partialFilter = "{'idempotencyKey': {'$exists': true, '$type': 'string'}}")
 })
 public class WorkflowExecution {
 
@@ -199,7 +199,6 @@ public class WorkflowExecution {
         this.durationMs = (this.startedAt != null) ? Duration.between(this.startedAt, this.completedAt).toMillis() : 0L;
         this.nodeExecutions = nodes != null ? new ArrayList<>(nodes) : new ArrayList<>();
         this.error = null;
-        this.leaseUntil = null;
     }
 
     public void markFailed(Instant completedAt, List<NodeExecution> nodes, String errorMessage) {
@@ -208,7 +207,6 @@ public class WorkflowExecution {
         this.durationMs = (this.startedAt != null) ? Duration.between(this.startedAt, this.completedAt).toMillis() : 0L;
         this.nodeExecutions = nodes != null ? new ArrayList<>(nodes) : new ArrayList<>();
         this.error = SecretRedactor.redactString(errorMessage != null ? errorMessage : "Workflow execution failed");
-        this.leaseUntil = null;
     }
 
     public String getId() {
