@@ -22,6 +22,9 @@ RUN npm run build
 # Stage 2: Production Nginx Runtime
 FROM nginx:alpine AS runner
 
+# Apply latest Alpine security patches
+RUN apk --no-cache upgrade
+
 # Replace default Nginx configuration with SPA fallback + /api reverse proxy
 COPY docker/frontend/nginx.conf /etc/nginx/conf.d/default.conf
 

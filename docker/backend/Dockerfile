@@ -25,6 +25,9 @@ RUN ./mvnw clean package -DskipTests
 FROM eclipse-temurin:21-jre-alpine AS runner
 WORKDIR /app
 
+# Apply latest Alpine security patches
+RUN apk --no-cache upgrade
+
 ARG APP_VERSION=0.0.1-SNAPSHOT
 ARG GIT_COMMIT=unknown
 ENV APP_VERSION=$APP_VERSION
