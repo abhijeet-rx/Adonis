@@ -14,8 +14,10 @@ spring:
 
 adonis:
   jwt:
-    secret: ${JWT_SECRET}
+    secret: ${JWT_SECRET:dev-insecure-jwt-secret-key-minimum-32-characters-long}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:}
   worker:
     enabled: ${WORKER_ENABLED:true}
     stream-name: ${REDIS_STREAM_NAME:adonis:execution:stream}

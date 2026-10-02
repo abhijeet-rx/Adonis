@@ -61,4 +61,16 @@ class JwtServiceTest {
         assertFalse(jwtService.isTokenValid(""), "Empty token must be rejected");
         assertFalse(jwtService.isTokenValid("   "), "Whitespace token must be rejected");
     }
+
+    @Test
+    void shouldFailFastWhenSecretIsMissingOrEmpty() {
+        assertThrows(io.jsonwebtoken.security.WeakKeyException.class, () -> new JwtService("", 3600000),
+                "Empty secret must fail fast during service initialization");
+    }
+
+    @Test
+    void shouldFailFastWhenSecretIsTooShort() {
+        assertThrows(io.jsonwebtoken.security.WeakKeyException.class, () -> new JwtService("short-key-under-32-bytes", 3600000),
+                "Secret shorter than 256 bits (32 bytes) must fail fast during service initialization");
+    }
 }

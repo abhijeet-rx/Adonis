@@ -22,6 +22,7 @@ services:
       - "8080:8080"
     environment:
       - SPRING_PROFILES_ACTIVE=dev
+      - JWT_SECRET=${JWT_SECRET:-dev-insecure-jwt-secret-key-for-local-testing-only-32bytes}
 
   frontend:
     ports:

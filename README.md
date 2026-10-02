@@ -479,14 +479,14 @@ Adonis provides a turn-key, production-style multi-container deployment orchestr
    ```bash
    cp .env.example .env
    ```
-   Configure a secure 256-bit JWT secret:
+   Configure a secure 256-bit JWT secret (minimum 32 characters / 64 hex characters):
    ```bash
    # On Linux/macOS:
    openssl rand -hex 32
    # On Windows (PowerShell):
    -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
    ```
-   Set `JWT_SECRET` in `.env`.
+   > ⚠️ **Mandatory Secret**: `JWT_SECRET` must be set in `.env` or your environment. The production stack intentionally contains no fallback secret and fails fast during container boot if `JWT_SECRET` is unset.
 
 2. **Start the Production Stack**:
    ```bash
@@ -504,7 +504,13 @@ Adonis provides a turn-key, production-style multi-container deployment orchestr
    - **Backend Health Check**: [http://localhost/api/health](http://localhost/api/health)
    - **Spring Actuator Health**: [http://localhost/actuator/health](http://localhost/actuator/health)
 
-5. **View Container Logs**:
+5. **Production CORS Configuration**:
+   In production (`SPRING_PROFILES_ACTIVE=prod`), local development origins (`localhost:5173`, etc.) are not automatically accepted. The production frontend communicates same-origin through the Nginx `/api/*` reverse proxy. If external web applications require direct cross-origin API access, explicitly declare them in `.env`:
+   ```env
+   CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+   ```
+
+6. **View Container Logs**:
    ```bash
    # Stream all logs:
    docker compose logs -f
@@ -514,13 +520,13 @@ Adonis provides a turn-key, production-style multi-container deployment orchestr
    docker compose logs -f frontend
    ```
 
-6. **Stop the Stack (Preserves Persistent Data)**:
+7. **Stop the Stack (Preserves Persistent Data)**:
    ```bash
    docker compose down
    ```
    > **Data Safety**: Stopping containers with `docker compose down` safely preserves all database documents, workflows, execution histories, and Redis streams in persistent named volumes (`adonis_mongo_data`, `adonis_redis_data`).
 
-7. **Reset Data (Delete Persistent Volumes)**:
+8. **Reset Data (Delete Persistent Volumes)**:
    ```bash
    docker compose down -v
    ```
@@ -531,6 +537,7 @@ To expose internal database and backend ports (MongoDB on `27017`, Redis on `637
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
+Development overrides provide convenient non-production fallback secrets and permit standard Vite dev server origins (`http://localhost:5173`).
 
 ---
 

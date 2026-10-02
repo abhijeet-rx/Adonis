@@ -650,6 +650,29 @@ This document records the architectural and technical decisions made during the 
   - Positive: Complete turn-key reproducibility via `docker compose up -d`, secure default posture with unexposed databases, non-root backend execution, zero-CORS browser communication, deterministic service startup, persistent state across restarts.
   - Trade-off: Initial cold-start image builds require fetching JDK/Node base images and dependencies (mitigated by Docker layer caching and CI pre-built steps).
 
+---
+
+## ADR-029: Phase 11 — Production Deployment Hardening (JWT Fail-Fast, Production CORS Restriction, and End-to-End Containerized Workflow Verification)
+
+* **Status**: Accepted
+* **Date**: 2026-10-02
+* **Context**:
+  Following the initial Phase 11 containerization, an audit identified three hardening requirements:
+  1. `docker-compose.yml` included a fallback for `JWT_SECRET`, creating the risk that a production deployment could silently boot with a known hardcoded key.
+  2. `WebConfig` always registered Vite/development localhost origins (`localhost:5173`, `127.0.0.1:5173`, `localhost:3000`) regardless of active Spring profile.
+  3. The CI Docker smoke test verified Nginx, health endpoints, and auth registration, but stopped short of executing an asynchronous workflow through the complete distributed pipeline (Nginx -> API -> Redis Streams -> ExecutionWorker -> MongoDB).
+* **Decision**:
+  - **Fail-Fast Mandatory JWT_SECRET in Production**:
+    Removed the fallback in `docker-compose.yml`, changing it to `JWT_SECRET=${JWT_SECRET}`. In `application-prod.yml`, `adonis.jwt.secret` is `${JWT_SECRET}` with no fallback. If omitted or empty, `JwtService` and Spring Boot context fail fast during startup with an invalid key exception. Convenient local defaults are maintained in `application.yml` and `docker-compose.dev.yml` for non-containerized/development runs.
+  - **Profile-Aware CORS Enforcement**:
+    Restricted default local development origins strictly to non-production profiles. When `SPRING_PROFILES_ACTIVE=prod`, development origins are not registered; only origins explicitly configured via `adonis.cors.allowed-origins` (`CORS_ALLOWED_ORIGINS`) are permitted. Normal production SPA access operates same-origin through the Nginx `/api/*` reverse proxy. Added comprehensive slice tests (`WebConfigCorsTest`) asserting dev allowances, prod default rejections, and prod custom origin acceptance.
+  - **Comprehensive Production Smoke Test with Asynchronous Execution**:
+    Strengthened the Docker CI smoke test and startup readiness. Docker healthchecks for all four containers (`adonis-mongodb`, `adonis-redis`, `adonis-backend`, `adonis-frontend`) are explicitly checked before running smoke tests. The smoke test registers a unique test user, creates a deterministic valid workflow (trigger + generic step), enqueues execution (`POST /api/workflows/{id}/execute`), polls `GET /api/executions/{id}` through Nginx until terminal status `SUCCESS`, and verifies MongoDB execution history persistence. If any step fails, detailed service logs and `docker compose ps -a` are dumped with credentials redacted.
+* **Consequences**:
+  - Positive: Eliminates silent insecure production boots; restricts cross-origin access in production environments; proves real Redis Streams consumption and asynchronous worker execution inside production containers.
+  - Trade-off: Production Docker deployments strictly require providing `JWT_SECRET` via `.env` or environment variables prior to running `docker compose up`.
+
+
 
 
 

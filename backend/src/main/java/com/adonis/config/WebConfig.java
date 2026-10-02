@@ -1,24 +1,46 @@
 package com.adonis.config;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.net.http.HttpClient;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 @Configuration
 public class WebConfig implements WebMvcConfigurer {
 
-    private static final String[] ALLOWED_DEV_ORIGINS = {
+    private static final String[] DEFAULT_DEV_ORIGINS = {
             "http://localhost:5173",
             "http://127.0.0.1:5173",
             "http://localhost:3000"
     };
 
-    @org.springframework.beans.factory.annotation.Value("${adonis.cors.allowed-origins:}")
+    private final Environment environment;
+
+    @Value("${adonis.cors.allowed-origins:}")
     private String configuredOrigins;
+
+    public WebConfig(Environment environment) {
+        this.environment = environment;
+    }
 
     @Override
     public void addCorsMappings(CorsRegistry registry) {
-        java.util.List<String> origins = new java.util.ArrayList<>(java.util.Arrays.asList(ALLOWED_DEV_ORIGINS));
+        List<String> origins = new ArrayList<>();
+
+        // In non-production profiles (dev, test, default), automatically permit standard local dev origins
+        if (!isProduction()) {
+            origins.addAll(Arrays.asList(DEFAULT_DEV_ORIGINS));
+        }
+
+        // Add any explicitly configured origins from adonis.cors.allowed-origins
         if (configuredOrigins != null && !configuredOrigins.isBlank()) {
             for (String origin : configuredOrigins.split(",")) {
                 String trimmed = origin.trim();
@@ -28,18 +50,24 @@ public class WebConfig implements WebMvcConfigurer {
             }
         }
 
-        registry.addMapping("/api/**")
-                .allowedOrigins(origins.toArray(new String[0]))
-                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")
-                .allowedHeaders("*")
-                .allowCredentials(true);
+        if (!origins.isEmpty()) {
+            registry.addMapping("/api/**")
+                    .allowedOrigins(origins.toArray(new String[0]))
+                    .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")
+                    .allowedHeaders("*")
+                    .allowCredentials(true);
+        }
     }
 
-    @org.springframework.context.annotation.Bean
-    public java.net.http.HttpClient httpClient() {
-        return java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(10))
-                .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+    private boolean isProduction() {
+        return environment.matchesProfiles("prod");
+    }
+
+    @Bean
+    public HttpClient httpClient() {
+        return HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
     }
 }

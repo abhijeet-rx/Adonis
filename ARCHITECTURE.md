@@ -1012,7 +1012,8 @@ To prevent race conditions during startup, all services declare explicit health 
 ### 13.7 Environment-Driven Configuration & Secret Management
 
 - **Spring Production Profile**: Activated via `SPRING_PROFILES_ACTIVE=prod`, loading `application-prod.yml`.
-- **Strict Secret Hygiene**: Zero hardcoded secrets in Dockerfiles, Compose files, or Git history.
+- **Strict Secret Hygiene & Fail-Fast Boot**: Zero hardcoded secrets in Dockerfiles, Compose files, or Git history. `JWT_SECRET` is strictly mandatory in production; `docker-compose.yml` provides no fallback value and Spring Boot fails fast during context initialization if `JWT_SECRET` is unset, empty, or less than 256 bits.
+- **Production CORS Hardening**: In production (`prod` profile), development localhost origins (`localhost:5173`, etc.) are not automatically accepted. Standard user access is same-origin through the Nginx reverse proxy. Cross-origin access for external clients requires explicit enumeration via `CORS_ALLOWED_ORIGINS` (`adonis.cors.allowed-origins`).
 - **`.env.example` Template**: Provides verified placeholders for `JWT_SECRET`, database URIs, queue names, and AI provider keys.
 - **Audit Logging**: Production console logging filters sensitive tokens, authorization headers, and OpenAI/Gemini API keys via `SecretRedactor`.
 
