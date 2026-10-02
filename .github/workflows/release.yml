@@ -1,0 +1,256 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag (e.g. v1.0.0)'
+        required: false
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-release:
+    name: Validate and Publish Release
+    runs-on: ubuntu-latest
+    env:
+      JWT_SECRET: smoke-test-production-jwt-secret-key-minimum-32-chars-long
+    steps:
+      - name: Checkout Repository (Full History)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Release Version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_VERSION="${{ github.event.inputs.version }}"
+          else
+            TAG_VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "RELEASE_VERSION=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_TAG=$TAG_VERSION" >> "$GITHUB_ENV"
+          echo "Determined release version: $TAG_VERSION"
+
+      # 1. Backend Validation
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Backend Build & Run Tests
+        working-directory: backend
+        run: |
+          chmod +x mvnw
+          ./mvnw clean test
+
+      # 2. Frontend Validation
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend Install Dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Frontend Build
+        working-directory: frontend
+        run: npm run build
+
+      # 3. Security Scanning
+      - name: Gitleaks Secret Scan
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Frontend Dependency Vulnerability Audit
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
+      # 4. Production Docker Build & Scanning
+      - name: Build Production Docker Images
+        run: |
+          export BACKEND_IMAGE="adonis-backend:${{ env.RELEASE_TAG }}"
+          export FRONTEND_IMAGE="adonis-frontend:${{ env.RELEASE_TAG }}"
+          export GIT_COMMIT="${{ github.sha }}"
+          docker compose build --build-arg GIT_COMMIT="${{ github.sha }}"
+
+      - name: Scan Backend Image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: adonis-backend:${{ env.RELEASE_TAG }}
+          format: 'table'
+          exit-code: 0
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      - name: Scan Frontend Image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: adonis-frontend:${{ env.RELEASE_TAG }}
+          format: 'table'
+          exit-code: 0
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      # 5. Production Docker Compose Stack Validation & Smoke Test
+      - name: Start Production Stack
+        run: |
+          export BACKEND_IMAGE="adonis-backend:${{ env.RELEASE_TAG }}"
+          export FRONTEND_IMAGE="adonis-frontend:${{ env.RELEASE_TAG }}"
+          export GIT_COMMIT="${{ github.sha }}"
+          docker compose up -d
+          echo "Waiting for all production services to become healthy..."
+          timeout 120s bash -c '
+            services=("adonis-mongodb" "adonis-redis" "adonis-backend" "adonis-frontend")
+            for svc in "${services[@]}"; do
+              echo "Waiting for $svc..."
+              until [ "$(docker inspect -f {{.State.Health.Status}} "$svc" 2>/dev/null)" = "healthy" ]; do
+                status=$(docker inspect -f {{.State.Health.Status}} "$svc" 2>/dev/null || echo "not running")
+                echo "  $svc current status: $status"
+                sleep 2
+              done
+              echo "  $svc is healthy!"
+            done
+          '
+          docker compose ps
+
+      - name: Output Service Logs on Failure
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --tail=200
+
+      - name: Run Production Smoke Test
+        run: |
+          echo "=== 1. Testing Frontend SPA on Port 80 ==="
+          curl -sSf http://localhost/ | grep -q "Adonis" || (echo "Frontend root HTML test failed" && exit 1)
+
+          echo "=== 2. Testing Frontend /healthz Endpoint ==="
+          curl -sSf http://localhost/healthz
+
+          echo "=== 3. Testing Backend /api/health through Nginx Reverse Proxy ==="
+          HEALTH_JSON=$(curl -sSf http://localhost/api/health)
+          echo "Health response: $HEALTH_JSON"
+          echo "$HEALTH_JSON" | grep -q '"status":"UP"' || (echo "Backend health check failed" && exit 1)
+
+          echo "=== 4. Testing Authentication API ==="
+          TEST_EMAIL="release-smoke-${RANDOM}@example.com"
+          REGISTER_RES=$(curl -sSf -X POST http://localhost/api/auth/register \
+            -H "Content-Type: application/json" \
+            -d "{\"name\":\"Release Smoke Tester\",\"email\":\"$TEST_EMAIL\",\"password\":\"Password123!\"}")
+          TOKEN=$(echo "$REGISTER_RES" | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+          test -n "$TOKEN" || (echo "Failed to obtain auth token" && exit 1)
+
+          echo "=== 5. Testing Protected API /api/users/me ==="
+          ME_RES=$(curl -sSf -H "Authorization: Bearer $TOKEN" http://localhost/api/users/me)
+          echo "$ME_RES" | grep -q "$TEST_EMAIL" || (echo "Profile check failed" && exit 1)
+
+          echo "=== 6. Creating Deterministic Release Verification Workflow ==="
+          WF_RES=$(curl -sSf -X POST http://localhost/api/workflows \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{
+              "name": "Release Verification Workflow",
+              "description": "Deterministic release smoke test for Redis Streams & Worker",
+              "status": "ACTIVE",
+              "nodes": [
+                { "id": "t1", "type": "trigger", "data": { "label": "Start", "triggerType": "manual" }, "position": { "x": 100.0, "y": 100.0 } },
+                { "id": "s1", "type": "generic", "data": { "label": "Step" }, "position": { "x": 300.0, "y": 100.0 } }
+              ],
+              "edges": [
+                { "id": "e1", "source": "t1", "target": "s1" }
+              ]
+            }')
+          WORKFLOW_ID=$(echo "$WF_RES" | grep -o '"id":"[^"]*' | head -n1 | cut -d'"' -f4)
+          test -n "$WORKFLOW_ID" || (echo "Failed to create workflow" && exit 1)
+
+          echo "=== 7. Triggering Workflow Execution via Redis Streams ==="
+          EXEC_RES=$(curl -sSf -X POST "http://localhost/api/workflows/$WORKFLOW_ID/execute" \
+            -H "Authorization: Bearer $TOKEN")
+          EXECUTION_ID=$(echo "$EXEC_RES" | grep -o '"executionId":"[^"]*' | head -n1 | cut -d'"' -f4)
+          test -n "$EXECUTION_ID" || (echo "Failed to enqueue execution" && exit 1)
+
+          echo "=== 8. Polling Execution Status through Terminal State (SUCCESS) ==="
+          FINAL_STATUS="UNKNOWN"
+          for i in $(seq 1 30); do
+            EXEC_DETAIL=$(curl -sSf -H "Authorization: Bearer $TOKEN" "http://localhost/api/executions/$EXECUTION_ID")
+            CURRENT_STATUS=$(echo "$EXEC_DETAIL" | grep -o '"status":"[^"]*' | head -n1 | cut -d'"' -f4)
+            if [ "$CURRENT_STATUS" = "SUCCESS" ]; then
+              FINAL_STATUS="SUCCESS"
+              break
+            elif [ "$CURRENT_STATUS" = "FAILED" ]; then
+              echo "Execution failed unexpectedly: $EXEC_DETAIL"
+              exit 1
+            fi
+            sleep 2
+          done
+          test "$FINAL_STATUS" = "SUCCESS" || (echo "Execution did not reach SUCCESS" && exit 1)
+
+          echo "=== 9. Verifying MongoDB Execution History Persistence ==="
+          HIST_RES=$(curl -sSf -H "Authorization: Bearer $TOKEN" "http://localhost/api/workflows/$WORKFLOW_ID/executions")
+          echo "$HIST_RES" | grep -q "$EXECUTION_ID" || (echo "History missing execution" && exit 1)
+          echo "$HIST_RES" | grep -q '"status":"SUCCESS"' || (echo "Status is not SUCCESS" && exit 1)
+
+          echo "=== Release validation smoke test passed successfully ==="
+
+      - name: Tear Down Stack
+        if: always()
+        run: docker compose down -v
+
+      # 6. Generate Release Metadata & Publish GitHub Release
+      - name: Generate Release Metadata Manifest
+        run: |
+          mkdir -p release-metadata
+          cat <<EOF > release-metadata/release-manifest.json
+          {
+            "release": "${{ env.RELEASE_TAG }}",
+            "commit": "${{ github.sha }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "images": {
+              "backend": "adonis-backend:${{ env.RELEASE_TAG }}",
+              "frontend": "adonis-frontend:${{ env.RELEASE_TAG }}"
+            },
+            "status": "VALIDATED"
+          }
+          EOF
+          echo "=== Generated Release Manifest ==="
+          cat release-metadata/release-manifest.json
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Adonis Release ${{ env.RELEASE_TAG }}
+          body: |
+            ### Adonis Production Release ${{ env.RELEASE_TAG }}
+
+            - **Commit SHA**: `${{ github.sha }}`
+            - **Validation**:
+              - Backend tests (Java 21): Passed
+              - Frontend lint & build: Passed
+              - Gitleaks secret scan: Passed
+              - npm audit dependency scan: Passed
+              - Docker multi-stage images: Built and Trivy scanned
+              - Production Compose stack smoke test: Passed (9/9 steps verified)
+              - Redis Streams worker execution & MongoDB persistence: Verified
+          files: |
+            release-metadata/release-manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -8,17 +8,15 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 11 — Production Docker Deployment** *(Completed)*
+**Phase 12 — CI/CD Pipeline Maturity, Container Hardening & Release Management** *(Completed)*
 
-This phase implements a production-style containerized deployment architecture for Adonis using Docker Compose v2:
-- **Unified Production Architecture**: Fronted by Nginx on port 80 serving the compiled React 19 SPA and reverse-proxying `/api/*` to the Spring Boot backend, eliminating CORS overhead in production.
-- **Client-Side SPA Routing**: Nginx configured with `try_files $uri $uri/ /index.html;` to ensure deep React routes (`/workflows`, `/executions`) resolve cleanly without 404 errors.
-- **Hardened Multi-Stage Dockerfiles**: Multi-stage builds for both Java 21 Spring Boot (`eclipse-temurin:21-jre-alpine` running as dedicated non-root user `appuser`) and React SPA (`nginx:alpine`), minimizing image attack surfaces.
-- **Internal Network Security**: MongoDB 7.0 and Redis 7.0 remain internal to the dedicated bridge network (`adonis-network`), unexposed to the host network interface in production.
-- **Native Health Checks & Dependency Ordering**: All services declare explicit health checks (`mongosh`, `redis-cli ping`, `/api/health`, `/healthz`) and start deterministically with `condition: service_healthy`.
-- **Persistent Named Volumes**: Database documents, unique indexes, and Redis Streams/PEL data are persisted across restarts in named volumes (`adonis_mongo_data`, `adonis_redis_data`).
-- **Environment-Driven Configuration**: Production configuration profile (`SPRING_PROFILES_ACTIVE=prod`) loading `application-prod.yml` with comprehensive `.env.example` template and zero committed secrets.
-- **Development Port Overrides**: Dedicated `docker-compose.dev.yml` allowing developers to expose internal database/queue ports for local debugging when needed.
+This phase transforms the Adonis CI/CD pipeline and container deployment into a mature production-oriented release platform:
+- **Structured Multi-Stage CI Pipeline**: Refactored `.github/workflows/ci.yml` into explicit dependency-ordered stages: `backend-test` (Java 21, Maven test, failure test reports), `frontend-test` (Node 20, npm ci, oxlint, build), `security-scan` (Gitleaks secret detection, npm audit), and `docker-smoke-test` (Docker build, Trivy image scan, container startup, 9-step Redis Streams worker smoke test).
+- **Automated Secret Detection & Supply Chain Auditing**: Enforces repository-wide secret scanning using `gitleaks/gitleaks-action@v3` with `.gitleaks.toml` allowlist for test fixtures and templates, and automated `npm audit --audit-level=high` dependency checking.
+- **Container Vulnerability Scanning & Deterministic Tagging**: Integrated Trivy container scanner (`aquasecurity/trivy-action`) to scan production images for CRITICAL/HIGH vulnerabilities. Dynamic image tags (`adonis-backend:${{ github.sha }}`) provide immutable build traceability.
+- **Container Security & Resource Protection**: Hardened `docker-compose.yml` with `security_opt: ["no-new-privileges:true"]`, explicit container stop grace periods (`stop_grace_period: 30s` for backend matching Spring Boot graceful shutdown phase `timeout-per-shutdown-phase: 20s`), and deploy CPU/memory constraints.
+- **Spring Security & Actuator Hardening**: Public actuator access restricted strictly to `/actuator/health` and `/actuator/info` (denying unauthenticated access to sensitive actuators like `/actuator/env`), standard HTTP security headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`), and safe Git commit metadata in `/api/health`.
+- **Automated Release Pipeline**: Dedicated `.github/workflows/release.yml` triggered on semantic version tags (`v*.*.*`) or manual dispatch. It executes full test validation, security scans, Docker builds, and the 9-step production smoke test, generating an immutable `release-manifest.json` and publishing official GitHub Releases.
 
 ---
 
@@ -27,12 +25,13 @@ This phase implements a production-style containerized deployment architecture f
 | Layer | Technology |
 |---|---|
 | **Backend** | Java 21 LTS, Spring Boot 3.3.4, Maven, Spring Web, Spring Data MongoDB, Spring Data Redis, Spring Security 6, JJWT 0.12, BCrypt |
-| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, @xyflow/react, Lucide Icons |
+| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, @xyflow/react, Lucide Icons, Oxlint |
 | **Database** | MongoDB 7.0 (Docker container `adonis-mongodb` on port 27017, collections: `users`, `workflows`, `workflow_executions`, `scheduled_occurrences`) |
 | **Queue & Cache** | Redis 7 Alpine (Docker container `adonis-redis` on port 6379, persistent appendonly storage `redis_data`) |
-| **Containerization** | Docker, Docker Compose (Multi-stage builds), Testcontainers 1.19.8 |
+| **Containerization** | Docker, Docker Compose (Multi-stage builds, non-root runtimes, resource limits), Testcontainers 1.19.8 |
 | **Testing** | JUnit 5, Spring Boot Test, Spring Security Test, Mockito, MockMvc, Testcontainers (MongoDB 7.0, Redis 7 Alpine), Local Mock HTTP Server (`com.sun.net.httpserver`), Awaitility |
-| **CI/CD** | GitHub Actions |
+| **Security & Scanning** | Gitleaks (Secret Scanner), Trivy (Container Vulnerability Scanner), npm audit, SecretRedactor |
+| **CI/CD** | GitHub Actions (Structured stages, concurrency controls, release publishing) |
 
 ---
 
@@ -68,7 +67,9 @@ This phase implements a production-style containerized deployment architecture f
 adonis/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                          # Automated CI pipeline for backend & frontend
+│       ├── ci.yml                          # Structured CI pipeline (backend, frontend, security, docker smoke)
+│       └── release.yml                     # Automated release validation and publishing workflow
+├── .gitleaks.toml                          # Secret scanning configuration and allowlists
 ├── backend/
 │   ├── .mvn/                               # Maven wrapper assets
 │   ├── src/
@@ -543,14 +544,15 @@ Development overrides provide convenient non-production fallback secrets and per
 
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0 through Phase 11 — Operational)**:
+- **Current (Phase 0 through Phase 12 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
-  - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
+  - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint and Git commit build metadata
   - MongoDB 7.0 persistence (`users`, `workflows`, `workflow_executions`, and `scheduled_occurrences` collections)
   - Partial unique index on `triggerConfig.webhookPath` and compound index on `scheduled_occurrences` `(workflowId, scheduledFireTime)`
   - Redis 7.0 Streams with Consumer Groups (`adonis:execution:stream` using `XADD`, `XREADGROUP`, `XACK`, `XPENDING`, `XCLAIM`)
-  - Spring Security 6 stateless authentication with BCrypt password hashing
+  - Spring Security 6 stateless authentication with BCrypt password hashing and hardened HTTP security headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`)
   - JJWT 0.12 Bearer token generation, verification, and protected endpoints (`GET /api/users/me`, `/api/workflows/**`, `/api/executions/**`)
+  - Narrowed Actuator endpoints permitting only `/actuator/health` and `/actuator/info` without credentials
   - Public unauthenticated capability URL endpoint (`POST /api/webhooks/{webhookPath}`) with 256-bit entropy, strict validation, trigger-type enforcement, and secret verification
   - Workflow CRUD REST API (`POST`, `GET`, `GET {id}`, `PUT {id}`, `DELETE {id}`) with ownership-level query isolation and cascade deletion of scheduled occurrences
   - React Flow visual workflow builder (`@xyflow/react`) with custom nodes (Trigger, HTTP Request, Generic, AI Text Generation, AI Structured Output), handles, zoom/pan/minimap, node palette, configuration drawer, and dirty state management
@@ -582,12 +584,10 @@ Development overrides provide convenient non-production fallback secrets and per
   - Paginated execution history endpoints (`GET /api/workflows/{id}/executions`, `GET /api/executions`) and detailed execution inspector (`GET /api/executions/{id}`)
   - Execution history panel with trigger badges (`MANUAL`, `SCHEDULE`, `WEBHOOK`), pagination, and enhanced execution results modal inspecting node inputs, outputs, errors, skipped steps, and attempt histories
   - Controlled frontend execution polling (every 1.5s) until terminal execution state (`SUCCESS` or `FAILED`)
-  - Hardened multi-stage Docker builds and Docker Compose production deployment (`docker-compose.yml`) with Nginx SPA serving, reverse proxying, non-root backend runner (`appuser`), internal database networking (`adonis-network`), health checks, and persistent volumes (`adonis_mongo_data`, `adonis_redis_data`)
+  - Hardened multi-stage Docker builds and Docker Compose production deployment (`docker-compose.yml`) with Nginx SPA serving, reverse proxying, non-root backend runner (`appuser`), internal database networking (`adonis-network`), health checks, persistent volumes (`adonis_mongo_data`, `adonis_redis_data`), `no-new-privileges:true` capability protection, and resource constraints
   - Testcontainers integration test suite with real MongoDB 7.0 and Redis 7 Alpine containers, Local Mock HTTP Server, and full infrastructure verification
-  - Automated GitHub Actions CI pipeline (backend unit & integration tests, frontend build & lint, Docker Compose deployment validation & smoke test)
-
-- **Planned Functionality (Phase 12)**:
-  - CI/CD & production hardening (Planned for Phase 12)
+  - Structured GitHub Actions CI pipeline (`.github/workflows/ci.yml`) with parallel stages (`backend-test`, `frontend-test`, `security-scan`, `docker-smoke-test`), concurrency controls, Surefire report archiving, Gitleaks secret detection, npm audit dependency scans, Trivy image scans, and 9-step Redis Streams/Worker smoke test
+  - Automated release validation and publishing pipeline (`.github/workflows/release.yml`) for semantic version tags (`v*.*.*`) generating immutable `release-manifest.json`
 
 ---
 
@@ -610,6 +610,6 @@ Development overrides provide convenient non-production fallback secrets and per
 - [x] **Phase 9 — AI Nodes**
 - [x] **Phase 10 — Automated Testing + Testcontainers**
 - [x] **Phase 11 — Production Docker Deployment**
-- [ ] **Phase 12 — GitHub Actions CI/CD + Production Hardening**
+- [x] **Phase 12 — GitHub Actions CI/CD + Production Hardening**
 
 

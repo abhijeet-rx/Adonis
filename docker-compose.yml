@@ -1,5 +1,5 @@
 # ==============================================================================
-# Adonis Production Docker Compose Stack (Phase 11)
+# Adonis Production Docker Compose Stack (Phase 11 & Phase 12 Hardened)
 # ==============================================================================
 # Architecture:
 #   Browser -> Frontend/Nginx (Port 80) -> /api/* -> Spring Boot Backend (Internal)
@@ -14,6 +14,14 @@ services:
     image: mongo:7.0
     container_name: adonis-mongodb
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
     environment:
       - MONGO_INITDB_DATABASE=${MONGO_INITDB_DATABASE:-adonis}
     volumes:
@@ -35,6 +43,14 @@ services:
     image: redis:7-alpine
     container_name: adonis-redis
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
     command: redis-server --appendonly yes
     volumes:
       - redis-data:/data
@@ -52,11 +68,22 @@ services:
   # 3. Adonis Spring Boot Backend Service (Java 21 LTS)
   # ----------------------------------------------------------------------------
   backend:
+    image: ${BACKEND_IMAGE:-adonis-backend:latest}
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: adonis-backend
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1536M
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       - SERVER_PORT=8080
@@ -75,6 +102,7 @@ services:
       - AI_CONNECT_TIMEOUT_MS=${AI_CONNECT_TIMEOUT_MS:-10000}
       - AI_READ_TIMEOUT_MS=${AI_READ_TIMEOUT_MS:-60000}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      - GIT_COMMIT=${GIT_COMMIT:-unknown}
     networks:
       - adonis-network
     depends_on:
@@ -93,6 +121,7 @@ services:
   # 4. Adonis React Frontend Service (Vite + Nginx Reverse Proxy)
   # ----------------------------------------------------------------------------
   frontend:
+    image: ${FRONTEND_IMAGE:-adonis-frontend:latest}
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile
@@ -100,6 +129,14 @@ services:
         VITE_API_BASE_URL: ""
     container_name: adonis-frontend
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
     ports:
       # Exposes production web entrypoint to host (default port 80)
       - "${FRONTEND_PORT:-80}:80"

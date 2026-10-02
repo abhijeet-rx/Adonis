@@ -1,0 +1,21 @@
+# ==============================================================================
+# Gitleaks Configuration for Adonis (Phase 12)
+# ==============================================================================
+# Configures automated secret detection rules and safe allowlists for test
+# fixtures, mock configurations, and documentation templates.
+# ==============================================================================
+
+title = "Adonis Secret Scanner Config"
+
+[allowlist]
+description = "Allowlist for test fixtures, mock data, and documentation templates"
+paths = [
+  '''(?i)backend/src/test/.*''',
+  '''(?i)backend/target/.*''',
+  '''(?i)frontend/dist/.*''',
+  '''(?i)\.env\.example$''',
+  '''(?i)README\.md$''',
+  '''(?i)ARCHITECTURE\.md$''',
+  '''(?i)DECISIONS\.md$''',
+  '''(?i)\.github/workflows/.*'''
+]

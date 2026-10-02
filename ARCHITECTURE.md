@@ -1017,6 +1017,73 @@ To prevent race conditions during startup, all services declare explicit health 
 - **`.env.example` Template**: Provides verified placeholders for `JWT_SECRET`, database URIs, queue names, and AI provider keys.
 - **Audit Logging**: Production console logging filters sensitive tokens, authorization headers, and OpenAI/Gemini API keys via `SecretRedactor`.
 
+---
+
+## 14. Phase 12 CI/CD Pipeline Maturity, Security Hardening & Release Lifecycle
+
+Phase 12 transforms Adonis from a containerized application into a hardened, production-ready engineering platform with automated quality gates, security scanning, deterministic releases, and runtime safeguards:
+
+```text
+ Developer Commit / Push
+           │
+           ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │                 GitHub Actions CI Pipeline                  │
+ │                                                             │
+ │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐  │
+ │  │  backend-test   │  │  frontend-test  │  │security-scan│  │
+ │  │ (Java 21/Maven) │  │  (Node 20/Vite) │  │(Gitleaks/npm│  │
+ │  └────────┬────────┘  └────────┬────────┘  └──────┬──────┘  │
+ │           │                    │                  │         │
+ │           └────────────────────┼──────────────────┘         │
+ │                                ▼                            │
+ │                   ┌──────────────────────────┐              │
+ │                   │    docker-smoke-test     │              │
+ │                   │ - Docker Compose build   │              │
+ │                   │ - Trivy container scan   │              │
+ │                   │ - 9-step production      │              │
+ │                   │   workflow smoke test    │              │
+ │                   └──────────────────────────┘              │
+ └─────────────────────────────────────────────────────────────┘
+           │
+           ▼ Tagged Release (v*.*.* / dispatch)
+ ┌─────────────────────────────────────────────────────────────┐
+ │                  GitHub Actions Release                     │
+ │  - Validation of tagged commit SHA                          │
+ │  - Immutable Docker image tagging                           │
+ │  - Release manifest artifact generation                     │
+ │  - GitHub Release publication with changelog                │
+ └─────────────────────────────────────────────────────────────┘
+```
+
+### 14.1 Structured CI Pipeline & Concurrency Controls
+The main CI workflow (`.github/workflows/ci.yml`) is partitioned into independent, parallelized verification stages:
+1. **`backend-test`**: Compiles and executes the backend test suite using Java 21 LTS with Maven dependency caching. Captures Surefire test reports as workflow artifacts upon any test failure for immediate diagnostics.
+2. **`frontend-test`**: Validates the TypeScript frontend using Node 20 with `npm ci`, runs `oxlint` static code analysis, and builds production assets with Vite.
+3. **`security-scan`**: Concurrently performs repository-level secret scanning and dependency vulnerability analysis.
+4. **`docker-smoke-test`**: Runs strictly after the first three stages succeed. Validates Docker Compose definitions, builds production images tagged with the commit SHA, scans them with Trivy, starts the stack, and runs the 9-step end-to-end smoke test (validating Nginx reverse proxying, auth registration, profile retrieval, workflow creation, Redis Streams dispatch, worker execution to `SUCCESS`, and MongoDB history persistence).
+5. **Concurrency Management**: Pull request runs automatically cancel redundant in-progress builds (`cancel-in-progress: true`), preserving runner resources while protecting `main` branch builds.
+
+### 14.2 Secret & Dependency Vulnerability Scanning
+- **Repository Secret Scanning**: Integrated `gitleaks/gitleaks-action@v3` with `.gitleaks.toml` declaring allowlists for mock test data, unit test fixtures, and documentation templates while inspecting full commit histories for leaked API keys, tokens, or private secrets.
+- **Frontend Dependency Auditing**: Enforces `npm audit --audit-level=high` in CI to guard against vulnerable npm packages.
+- **Container Vulnerability Scanning**: Production images are scanned using Trivy (`aquasecurity/trivy-action`) for both OS packages and application dependencies, evaluating `HIGH` and `CRITICAL` vulnerabilities.
+
+### 14.3 Container Security Hardening & Resource Protection
+- **Privilege Escalation Prevention**: All containers enforce `security_opt: ["no-new-privileges:true"]`, preventing processes inside containers from acquiring additional privileges.
+- **Graceful Shutdown Stop Periods**: Configured explicit stop grace periods (`stop_grace_period: 30s` for backend matching Spring Boot graceful shutdown phase `timeout-per-shutdown-phase: 20s` and distributed worker leases; `20s` for mongodb; `15s` for redis; `10s` for frontend).
+- **Resource Limits**: Applied explicit CPU and memory caps (`deploy.resources.limits`) preventing runaway resource consumption (backend: 2.0 CPUs / 1536M RAM, mongodb: 2.0 CPUs / 1024M RAM, redis: 1.0 CPU / 512M RAM, frontend: 1.0 CPU / 256M RAM).
+
+### 14.4 Safe Build Metadata & Actuator Hardening
+- **Actuator Security**: Narrowed public actuator access in `SecurityConfig` strictly to `/actuator/health` and `/actuator/info`. Sensitive internal endpoints (`/actuator/env`, `/actuator/beans`, `/actuator/mappings`, `/actuator/configprops`) require authentication and remain unexposed.
+- **Security Headers**: Standard HTTP headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`) are enforced globally.
+- **Traceable Build Metadata**: The `/api/health` endpoint exposes safe, non-sensitive build metadata (`commit`, `service`, `version`, `status`, `timestamp`) enabling production monitoring tools to verify the exact Git SHA running in any container.
+
+### 14.5 Automated Release Validation & Semantic Versioning
+- **Release Pipeline (`.github/workflows/release.yml`)**: Triggered exclusively on semantic version tags (`v*.*.*`) or manual workflow dispatch.
+- **Full Release Verification**: Prior to release publication, the workflow executes backend tests, frontend build, security scans, Docker image builds, and the full production smoke test against the tagged commit.
+- **Release Manifest**: Generates an immutable `release-manifest.json` linking the semantic release version to the Git commit SHA, build timestamp, and container image identifiers, published alongside official GitHub Releases.
+
 
 
 

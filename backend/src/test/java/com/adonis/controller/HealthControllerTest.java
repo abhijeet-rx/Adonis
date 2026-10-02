@@ -31,6 +31,7 @@ class HealthControllerTest {
                 .andExpect(jsonPath("$.status").value("UP"))
                 .andExpect(jsonPath("$.service").value("adonis-backend"))
                 .andExpect(jsonPath("$.version").value("0.0.1-SNAPSHOT"))
+                .andExpect(jsonPath("$.commit").value("unknown"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
 }

@@ -670,7 +670,41 @@ This document records the architectural and technical decisions made during the 
     Strengthened the Docker CI smoke test and startup readiness. Docker healthchecks for all four containers (`adonis-mongodb`, `adonis-redis`, `adonis-backend`, `adonis-frontend`) are explicitly checked before running smoke tests. The smoke test registers a unique test user, creates a deterministic valid workflow (trigger + generic step), enqueues execution (`POST /api/workflows/{id}/execute`), polls `GET /api/executions/{id}` through Nginx until terminal status `SUCCESS`, and verifies MongoDB execution history persistence. If any step fails, detailed service logs and `docker compose ps -a` are dumped with credentials redacted.
 * **Consequences**:
   - Positive: Eliminates silent insecure production boots; restricts cross-origin access in production environments; proves real Redis Streams consumption and asynchronous worker execution inside production containers.
-  - Trade-off: Production Docker deployments strictly require providing `JWT_SECRET` via `.env` or environment variables prior to running `docker compose up`.
+---
+
+## ADR-030: Phase 12 — CI/CD Pipeline Maturity, Production Container Hardening, and Automated Release Lifecycle
+
+* **Status**: Accepted
+* **Date**: 2026-10-02
+* **Context**:
+  Following Phase 11 production containerization, Phase 12 required transforming Adonis into a mature, production-ready engineering system with structured CI/CD orchestration, supply-chain hygiene, secret scanning, dependency scanning, Docker container runtime hardening, deterministic image tagging, actuator security hardening, and an automated release validation lifecycle.
+* **Decision**:
+  - **Structured CI Pipeline & Concurrency Controls**:
+    Refactored `.github/workflows/ci.yml` into explicit dependency-ordered stages:
+    `backend-test` (Java 21, Maven test, surefire test report artifacts on failure),
+    `frontend-test` (Node 20, npm ci, oxlint, typecheck & build),
+    `security-scan` (Gitleaks repository secret detection + npm audit dependency vulnerability check), and
+    `docker-smoke-test` (Compose config validation, deterministic image build, Trivy container security scans, container startup, 9-step Redis Streams & Worker end-to-end smoke test).
+    Added GitHub Actions concurrency grouping (`cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`) to prevent redundant runs.
+  - **Automated Secret Detection & Supply Chain Scanning**:
+    Introduced `gitleaks/gitleaks-action@v3` paired with `.gitleaks.toml` declaring allowlists for mock test fixtures and documentation templates.
+    Introduced `npm audit --audit-level=high` in CI to fail on high/critical vulnerable frontend dependencies, patching the PostCSS dependency to secure baseline.
+    Introduced Trivy (`aquasecurity/trivy-action`) container scanning for backend and frontend production images to identify OS and package vulnerabilities.
+  - **Deterministic Image Tagging & Safe Build Metadata**:
+    Docker Compose now tags images dynamically with commit SHAs (`adonis-backend:${{ github.sha }}`) while maintaining sensible local defaults (`latest`).
+    Exposed non-sensitive build commit metadata via `/api/health` (`HealthResponse.commit`) populated at container build time, preserving secret hygiene.
+  - **Production Container Hardening & Resource Limits**:
+    Configured `security_opt: ["no-new-privileges:true"]` across all containers to prevent privilege escalation attacks.
+    Configured explicit stop grace periods (`stop_grace_period: 30s` for backend matching Spring Boot graceful shutdown phase `timeout-per-shutdown-phase: 20s` and worker lease renewal; `20s` for mongodb; `15s` for redis; `10s` for frontend).
+    Added resource constraints (`deploy.resources.limits`) to safeguard host systems from runaway CPU or memory utilization.
+  - **Spring Security & Actuator Endpoint Hardening**:
+    Narrowed public Actuator endpoint access in `SecurityConfig` strictly to `/actuator/health` and `/actuator/info`. Sensitive internal endpoints (`/actuator/env`, `/actuator/beans`, `/actuator/mappings`) require authenticated access or remain unexposed.
+    Configured standard HTTP security response headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`). Added regression tests in `SecurityHardeningTest`.
+  - **Automated Release Pipeline (`release.yml`)**:
+    Implemented `.github/workflows/release.yml` triggered on semantic version tags (`v*.*.*`) or manual dispatch. It verifies backend tests, frontend builds, security scans, Docker builds, and the complete 9-step production smoke test, generating an immutable release manifest (`release-manifest.json`) and publishing a verified GitHub Release.
+* **Consequences**:
+  - Positive: Guarantees end-to-end release integrity; prevents secret leaks and vulnerable dependencies; hardens production containers; provides deterministic build traceability without adding unnecessary cloud infrastructure complexity.
+  - Trade-off: CI pipeline execution includes security and vulnerability scanning steps before launching the container smoke test.
 
 
 

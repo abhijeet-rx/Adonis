@@ -14,8 +14,11 @@ public class HealthController {
     @Value("${spring.application.name:adonis-backend}")
     private String serviceName;
 
+    @Value("${adonis.build.commit:${GIT_COMMIT:unknown}}")
+    private String commit;
+
     @GetMapping
     public ResponseEntity<HealthResponse> checkHealth() {
-        return ResponseEntity.ok(HealthResponse.ok(serviceName, "0.0.1-SNAPSHOT"));
+        return ResponseEntity.ok(HealthResponse.ok(serviceName, "0.0.1-SNAPSHOT", commit));
     }
 }
