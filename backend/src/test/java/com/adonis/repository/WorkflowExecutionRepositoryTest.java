@@ -3,8 +3,8 @@ package com.adonis.repository;
 import com.adonis.execution.ExecutionStatus;
 import com.adonis.model.NodeExecution;
 import com.adonis.model.WorkflowExecution;
+import com.adonis.test.ModernMemoryBackend;
 import de.bwaldvogel.mongo.MongoServer;
-import de.bwaldvogel.mongo.backend.memory.MemoryBackend;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,7 +33,7 @@ class WorkflowExecutionRepositoryTest {
 
     @BeforeAll
     static void setUpServer() {
-        server = new MongoServer(new MemoryBackend());
+        server = new MongoServer(new ModernMemoryBackend());
         serverAddress = server.bind();
     }
 

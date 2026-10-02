@@ -7,8 +7,8 @@ import com.adonis.queue.InMemoryExecutionQueue;
 import com.adonis.queue.QueuedJobMessage;
 import com.adonis.repository.WorkflowExecutionRepository;
 import com.adonis.repository.WorkflowRepository;
+import com.adonis.test.ModernMemoryBackend;
 import de.bwaldvogel.mongo.MongoServer;
-import de.bwaldvogel.mongo.backend.memory.MemoryBackend;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,7 +36,7 @@ class TriggerPipelineIntegrationTest {
 
     @BeforeAll
     static void setUpServer() {
-        server = new MongoServer(new MemoryBackend());
+        server = new MongoServer(new ModernMemoryBackend());
         serverAddress = server.bind();
     }
 
