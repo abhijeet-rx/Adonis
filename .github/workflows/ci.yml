@@ -83,6 +83,29 @@ jobs:
         working-directory: frontend
         run: npm audit --audit-level=high
 
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Populate Local Maven Dependency Cache
+        working-directory: backend
+        run: |
+          chmod +x mvnw
+          ./mvnw dependency:resolve -B
+
+      - name: Backend Dependency Vulnerability Scan (Trivy SCA)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: 'backend'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
   docker-smoke-test:
     name: Docker Deployment Validation & Smoke Test
     runs-on: ubuntu-latest
@@ -92,6 +115,11 @@ jobs:
       BACKEND_IMAGE: adonis-backend:${{ github.sha }}
       FRONTEND_IMAGE: adonis-frontend:${{ github.sha }}
       GIT_COMMIT: ${{ github.sha }}
+      APP_VERSION: ${{ github.sha }}
+      REDIS_PASSWORD: smoke-test-redis-password-12345
+      MONGODB_USERNAME: adonis_admin
+      MONGODB_PASSWORD: smoke-test-mongo-password-12345
+      MONGODB_URI: mongodb://adonis_admin:smoke-test-mongo-password-12345@mongodb:27017/adonis?authSource=admin
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -100,14 +128,14 @@ jobs:
         run: docker compose config
 
       - name: Build Production Docker Images
-        run: docker compose build --build-arg GIT_COMMIT=${{ github.sha }}
+        run: docker compose build --build-arg GIT_COMMIT=${{ github.sha }} --build-arg APP_VERSION=${{ github.sha }}
 
       - name: Scan Backend Image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: adonis-backend:${{ github.sha }}
           format: 'table'
-          exit-code: 0
+          exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
 
@@ -116,7 +144,7 @@ jobs:
         with:
           image-ref: adonis-frontend:${{ github.sha }}
           format: 'table'
-          exit-code: 0
+          exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
 
@@ -166,6 +194,8 @@ jobs:
           echo "Health response: $HEALTH_JSON"
           echo "$HEALTH_JSON" | grep -q '"status":"UP"' || (echo "Backend health check failed" && exit 1)
           echo "$HEALTH_JSON" | grep -q '"service":"adonis-backend"' || (echo "Backend service name check failed" && exit 1)
+          echo "$HEALTH_JSON" | grep -q "\"version\":\"${{ github.sha }}\"" || (echo "Backend version check failed" && exit 1)
+          echo "$HEALTH_JSON" | grep -q "\"commit\":\"${{ github.sha }}\"" || (echo "Backend commit check failed" && exit 1)
 
           echo "=== 4. Testing Authentication API through Reverse Proxy ==="
           TEST_EMAIL="smoke-${GITHUB_RUN_ID:-local}-${RANDOM}@example.com"

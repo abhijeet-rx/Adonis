@@ -28,6 +28,8 @@ spring:
       timeout: ${REDIS_TIMEOUT_MS:5000}
 
 adonis:
+  app:
+    version: ${APP_VERSION:0.0.1-SNAPSHOT}
   jwt:
     # Required in production: 256-bit secret key (min 32 characters)
     secret: ${JWT_SECRET}

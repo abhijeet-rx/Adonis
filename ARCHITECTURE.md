@@ -1065,24 +1065,29 @@ The main CI workflow (`.github/workflows/ci.yml`) is partitioned into independen
 5. **Concurrency Management**: Pull request runs automatically cancel redundant in-progress builds (`cancel-in-progress: true`), preserving runner resources while protecting `main` branch builds.
 
 ### 14.2 Secret & Dependency Vulnerability Scanning
-- **Repository Secret Scanning**: Integrated `gitleaks/gitleaks-action@v3` with `.gitleaks.toml` declaring allowlists for mock test data, unit test fixtures, and documentation templates while inspecting full commit histories for leaked API keys, tokens, or private secrets.
+- **Repository Secret Scanning**: Integrated `gitleaks/gitleaks-action@v3` with `.gitleaks.toml`. All source files, test fixtures (`backend/src/test/**`), workflow configurations (`.github/workflows/**`), `.env.example`, and markdown documentation are fully scanned. Only transient build outputs (`backend/target/`, `frontend/dist/`) are excluded by path, with legitimate mock credentials (mock hex JWT secrets, fake OpenAI/Gemini test keys, and ephemeral smoke-test tokens) allowlisted exclusively through exact, narrowly-scoped regex patterns.
 - **Frontend Dependency Auditing**: Enforces `npm audit --audit-level=high` in CI to guard against vulnerable npm packages.
-- **Container Vulnerability Scanning**: Production images are scanned using Trivy (`aquasecurity/trivy-action`) for both OS packages and application dependencies, evaluating `HIGH` and `CRITICAL` vulnerabilities.
+- **Backend Maven Dependency Vulnerability Scanning**: Integrated Trivy Software Composition Analysis (SCA) (`scan-type: 'fs'`, `scan-ref: 'backend'`) in CI, auditing `backend/pom.xml` dependencies with `exit-code: '1'` on `CRITICAL,HIGH` vulnerabilities. In addition, `dependency-check-maven` 10.0.4 is configured in `backend/pom.xml` with `<failBuildOnCVSS>8</failBuildOnCVSS>` for local developer vulnerability auditing.
+- **Container Vulnerability Scanning**: Production images are scanned using Trivy (`aquasecurity/trivy-action`) for both OS packages and application dependencies, enforcing an automated security gate with `exit-code: '1'`, `severity: 'CRITICAL,HIGH'`, and `ignore-unfixed: true`.
 
-### 14.3 Container Security Hardening & Resource Protection
+### 14.3 Container Security Hardening, Resource Protection & Database Authentication
 - **Privilege Escalation Prevention**: All containers enforce `security_opt: ["no-new-privileges:true"]`, preventing processes inside containers from acquiring additional privileges.
 - **Graceful Shutdown Stop Periods**: Configured explicit stop grace periods (`stop_grace_period: 30s` for backend matching Spring Boot graceful shutdown phase `timeout-per-shutdown-phase: 20s` and distributed worker leases; `20s` for mongodb; `15s` for redis; `10s` for frontend).
 - **Resource Limits**: Applied explicit CPU and memory caps (`deploy.resources.limits`) preventing runaway resource consumption (backend: 2.0 CPUs / 1536M RAM, mongodb: 2.0 CPUs / 1024M RAM, redis: 1.0 CPU / 512M RAM, frontend: 1.0 CPU / 256M RAM).
+- **Redis Authentication**: In production, when `REDIS_PASSWORD` is supplied, Redis starts with `--requirepass "$REDIS_PASSWORD"`, the container healthcheck authenticates with `redis-cli -a`, and Spring Boot connects using the matching password. Local development remains unauthenticated by default.
+- **MongoDB Authentication**: In production, MongoDB supports `MONGO_INITDB_ROOT_USERNAME` and `MONGO_INITDB_ROOT_PASSWORD` with an authenticated `mongosh` health check (`db.adminCommand("ping")`). Backend connects via authenticated `MONGODB_URI` (`mongodb://<user>:<password>@mongodb:27017/adonis?authSource=admin`).
 
 ### 14.4 Safe Build Metadata & Actuator Hardening
 - **Actuator Security**: Narrowed public actuator access in `SecurityConfig` strictly to `/actuator/health` and `/actuator/info`. Sensitive internal endpoints (`/actuator/env`, `/actuator/beans`, `/actuator/mappings`, `/actuator/configprops`) require authentication and remain unexposed.
 - **Security Headers**: Standard HTTP headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`) are enforced globally.
-- **Traceable Build Metadata**: The `/api/health` endpoint exposes safe, non-sensitive build metadata (`commit`, `service`, `version`, `status`, `timestamp`) enabling production monitoring tools to verify the exact Git SHA running in any container.
+- **Dynamic Release Version & Commit Metadata**: The `/api/health` endpoint exposes dynamic application version (`version`, injected from `APP_VERSION` build argument and environment) and Git commit metadata (`commit`, injected from `GIT_COMMIT` build argument), alongside `service`, `status`, and `timestamp`.
 
 ### 14.5 Automated Release Validation & Semantic Versioning
-- **Release Pipeline (`.github/workflows/release.yml`)**: Triggered exclusively on semantic version tags (`v*.*.*`) or manual workflow dispatch.
-- **Full Release Verification**: Prior to release publication, the workflow executes backend tests, frontend build, security scans, Docker image builds, and the full production smoke test against the tagged commit.
-- **Release Manifest**: Generates an immutable `release-manifest.json` linking the semantic release version to the Git commit SHA, build timestamp, and container image identifiers, published alongside official GitHub Releases.
+- **Release Pipeline (`.github/workflows/release.yml`)**: Triggered on semantic version tags (`v*.*.*`) or manual workflow dispatch.
+- **Deterministic Manual Dispatch (Option A)**: Manual releases validate semantic versioning (`^v[0-9]+\.[0-9]+\.[0-9]+.*$`), check remote tags for collision/drift, create and push the Git release tag to `origin`, and proceed with official publication.
+- **Full Release Verification**: Prior to release publication, the workflow executes backend tests, frontend build, secret scanning, dependency vulnerability audits (npm audit + Trivy Maven SCA), Docker image builds, Trivy container security scans (CRITICAL/HIGH gate: 0), and the full 9-step production smoke test under Redis and MongoDB authentication.
+- **Release Manifest & Immutable Image Tags**: Generates an immutable `release-manifest.json` recording the semantic release version, Git commit SHA, image tags (`adonis-backend:<tag>` and `adonis-backend:<sha>`), and publication status, published as an asset with official GitHub Releases.
+
 
 
 

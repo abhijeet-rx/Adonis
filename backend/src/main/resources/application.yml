@@ -13,6 +13,8 @@ spring:
       port: ${REDIS_PORT:6379}
 
 adonis:
+  app:
+    version: ${APP_VERSION:0.0.1-SNAPSHOT}
   jwt:
     secret: ${JWT_SECRET:dev-insecure-jwt-secret-key-minimum-32-characters-long}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}

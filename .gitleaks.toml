@@ -1,21 +1,54 @@
 # ==============================================================================
-# Gitleaks Configuration for Adonis (Phase 12)
+# Gitleaks Configuration for Adonis (Phase 12 Hardened)
 # ==============================================================================
-# Configures automated secret detection rules and safe allowlists for test
-# fixtures, mock configurations, and documentation templates.
+# Narrowly scoped allowlist:
+# - All source code, test code, workflow files, and environment files ARE SCANNED.
+# - Only transient build outputs are excluded by path.
+# - Intentionally fake test fixtures, documentation placeholders, and smoke-test
+#   ephemeral credentials are specifically allowed via targeted regexes.
 # ==============================================================================
 
 title = "Adonis Secret Scanner Config"
 
 [allowlist]
-description = "Allowlist for test fixtures, mock data, and documentation templates"
+description = "Narrowly scoped allowlist for test fixtures, mock data, and documentation templates"
 paths = [
-  '''(?i)backend/src/test/.*''',
   '''(?i)backend/target/.*''',
   '''(?i)frontend/dist/.*''',
-  '''(?i)\.env\.example$''',
-  '''(?i)README\.md$''',
-  '''(?i)ARCHITECTURE\.md$''',
-  '''(?i)DECISIONS\.md$''',
-  '''(?i)\.github/workflows/.*'''
+  '''(?i)frontend/package-lock\.json$'''
 ]
+regexes = [
+  # Mock 64-char hex JWT secret used exclusively in unit/integration test fixtures
+  '''404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970''',
+  # Smoke test mock credentials used exclusively in CI ephemeral containers
+  '''smoke-test-production-jwt-secret-key-minimum-32-chars-long''',
+  '''smoke-test-redis-password-12345''',
+  '''smoke-test-mongo-password-12345''',
+  # Development mock secret used in dev profile
+  '''dev-insecure-jwt-secret-key-minimum-32-chars-long''',
+  # Test fixtures mock OpenAI & Gemini keys used in AI provider & SecretRedactor tests
+  '''sk-test-[a-zA-Z0-9_-]+''',
+  '''sk-test123456789012345678901234''',
+  '''sk-secret123''',
+  '''sk-1234567890abcdef1234567890''',
+  '''sk-proj-1234567890abcdefghijklmnopqrstuvwxyz''',
+  '''sk-123456789012345678901234''',
+  '''AIzaSy-test-mock-gemini-key-[a-zA-Z0-9]+''',
+  '''AIzaSyAbcdef12345678901234567890123456''',
+  '''AIzaSyB1234567890abcdef1234567890abcdef''',
+  # Mock test credentials used in SecretRedactor & ExecutionSecurityHardening tests
+  '''mySecretPassword123''',
+  '''superSecretPassword''',
+  '''topSecretDbPassword''',
+  '''prod-secret-api-key-999''',
+  '''secret-token-abcdef123456''',
+  '''super-secret-key-12345''',
+  '''secretPassword123''',
+  '''hashed_secret_password''',
+  '''hash_secret_123''',
+  # Documentation placeholder tokens
+  '''replace-with-a-long-random-secret''',
+  '''replace-with-secure-password''',
+  '''replace-with-a-secure-random-64-character-hex-string'''
+]
+

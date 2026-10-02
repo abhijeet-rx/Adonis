@@ -8,7 +8,7 @@ on:
     inputs:
       version:
         description: 'Release version tag (e.g. v1.0.0)'
-        required: false
+        required: true
         default: 'v1.0.0'
 
 permissions:
@@ -26,11 +26,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Determine Release Version
+      - name: Determine & Validate Release Version
         id: version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG_VERSION="${{ github.event.inputs.version }}"
+            if [[ ! "$TAG_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+              echo "Error: Release version '$TAG_VERSION' must follow semantic version format (e.g., v1.0.0)"
+              exit 1
+            fi
+            git fetch --tags
+            if git rev-parse -q --verify "refs/tags/$TAG_VERSION" >/dev/null; then
+              EXISTING_SHA=$(git rev-parse "refs/tags/$TAG_VERSION")
+              CURRENT_SHA=$(git rev-parse HEAD)
+              if [ "$EXISTING_SHA" != "$CURRENT_SHA" ]; then
+                echo "Error: Tag '$TAG_VERSION' already exists and points to $EXISTING_SHA (current HEAD is $CURRENT_SHA). Aborting to prevent tag overwrite."
+                exit 1
+              fi
+              echo "Tag '$TAG_VERSION' already exists pointing to current commit."
+            else
+              echo "Creating and pushing release tag '$TAG_VERSION' for current commit..."
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag -a "$TAG_VERSION" -m "Release $TAG_VERSION"
+              git push origin "$TAG_VERSION"
+            fi
           else
             TAG_VERSION="${GITHUB_REF#refs/tags/}"
           fi
@@ -82,20 +102,33 @@ jobs:
         working-directory: frontend
         run: npm audit --audit-level=high
 
+      - name: Backend Dependency Vulnerability Scan (Trivy SCA)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: 'backend'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
       # 4. Production Docker Build & Scanning
       - name: Build Production Docker Images
         run: |
           export BACKEND_IMAGE="adonis-backend:${{ env.RELEASE_TAG }}"
           export FRONTEND_IMAGE="adonis-frontend:${{ env.RELEASE_TAG }}"
           export GIT_COMMIT="${{ github.sha }}"
-          docker compose build --build-arg GIT_COMMIT="${{ github.sha }}"
+          export APP_VERSION="${{ env.RELEASE_TAG }}"
+          docker compose build --build-arg GIT_COMMIT="${{ github.sha }}" --build-arg APP_VERSION="${{ env.RELEASE_TAG }}"
+          docker tag "adonis-backend:${{ env.RELEASE_TAG }}" "adonis-backend:${{ github.sha }}"
+          docker tag "adonis-frontend:${{ env.RELEASE_TAG }}" "adonis-frontend:${{ github.sha }}"
 
       - name: Scan Backend Image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: adonis-backend:${{ env.RELEASE_TAG }}
           format: 'table'
-          exit-code: 0
+          exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
 
@@ -104,7 +137,7 @@ jobs:
         with:
           image-ref: adonis-frontend:${{ env.RELEASE_TAG }}
           format: 'table'
-          exit-code: 0
+          exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
 
@@ -114,6 +147,11 @@ jobs:
           export BACKEND_IMAGE="adonis-backend:${{ env.RELEASE_TAG }}"
           export FRONTEND_IMAGE="adonis-frontend:${{ env.RELEASE_TAG }}"
           export GIT_COMMIT="${{ github.sha }}"
+          export APP_VERSION="${{ env.RELEASE_TAG }}"
+          export REDIS_PASSWORD="smoke-test-redis-password-12345"
+          export MONGODB_USERNAME="adonis_admin"
+          export MONGODB_PASSWORD="smoke-test-mongo-password-12345"
+          export MONGODB_URI="mongodb://adonis_admin:smoke-test-mongo-password-12345@mongodb:27017/adonis?authSource=admin"
           docker compose up -d
           echo "Waiting for all production services to become healthy..."
           timeout 120s bash -c '
@@ -148,6 +186,9 @@ jobs:
           HEALTH_JSON=$(curl -sSf http://localhost/api/health)
           echo "Health response: $HEALTH_JSON"
           echo "$HEALTH_JSON" | grep -q '"status":"UP"' || (echo "Backend health check failed" && exit 1)
+          echo "$HEALTH_JSON" | grep -q '"service":"adonis-backend"' || (echo "Backend service check failed" && exit 1)
+          echo "$HEALTH_JSON" | grep -q "\"version\":\"${{ env.RELEASE_TAG }}\"" || (echo "Backend release version check failed" && exit 1)
+          echo "$HEALTH_JSON" | grep -q "\"commit\":\"${{ github.sha }}\"" || (echo "Backend commit check failed" && exit 1)
 
           echo "=== 4. Testing Authentication API ==="
           TEST_EMAIL="release-smoke-${RANDOM}@example.com"
@@ -224,8 +265,11 @@ jobs:
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "images": {
               "backend": "adonis-backend:${{ env.RELEASE_TAG }}",
-              "frontend": "adonis-frontend:${{ env.RELEASE_TAG }}"
+              "backend_sha": "adonis-backend:${{ github.sha }}",
+              "frontend": "adonis-frontend:${{ env.RELEASE_TAG }}",
+              "frontend_sha": "adonis-frontend:${{ github.sha }}"
             },
+            "distribution": "local-ci-runner",
             "status": "VALIDATED"
           }
           EOF
@@ -234,9 +278,9 @@ jobs:
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           name: Adonis Release ${{ env.RELEASE_TAG }}
           body: |
             ### Adonis Production Release ${{ env.RELEASE_TAG }}
@@ -247,8 +291,9 @@ jobs:
               - Frontend lint & build: Passed
               - Gitleaks secret scan: Passed
               - npm audit dependency scan: Passed
-              - Docker multi-stage images: Built and Trivy scanned
-              - Production Compose stack smoke test: Passed (9/9 steps verified)
+              - Backend dependency vulnerability scan (Trivy SCA): Passed
+              - Docker multi-stage images: Built and Trivy scanned (CRITICAL/HIGH gate: 0)
+              - Production Compose stack smoke test: Passed (9/9 steps verified under Redis & MongoDB auth)
               - Redis Streams worker execution & MongoDB persistence: Verified
           files: |
             release-metadata/release-manifest.json

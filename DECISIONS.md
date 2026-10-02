@@ -706,6 +706,37 @@ This document records the architectural and technical decisions made during the 
   - Positive: Guarantees end-to-end release integrity; prevents secret leaks and vulnerable dependencies; hardens production containers; provides deterministic build traceability without adding unnecessary cloud infrastructure complexity.
   - Trade-off: CI pipeline execution includes security and vulnerability scanning steps before launching the container smoke test.
 
+---
+
+## ADR-031: Phase 12 — Final Security and Release Hardening Pass
+
+* **Status**: Accepted
+* **Date**: 2026-10-02
+* **Context**:
+  Following the initial Phase 12 implementation, an audit identified remaining hardening improvements across CI/CD security gates, dependency scanning, secret scanner allowlists, database authentication, dynamic release versioning, and manual release dispatch consistency.
+* **Decision**:
+  - **Strict Trivy Security Gate**:
+    Configured Trivy in CI (`ci.yml`) and release workflows (`release.yml`) to fail (`exit-code: '1'`) on HIGH or CRITICAL vulnerabilities (`ignore-unfixed: true`, `severity: 'CRITICAL,HIGH'`).
+  - **Maven Dependency Vulnerability Scanning**:
+    Added Trivy SCA filesystem scan (`scan-type: 'fs'`, `scan-ref: 'backend'`, `exit-code: '1'`, `severity: 'CRITICAL,HIGH'`) to scan `backend/pom.xml` dependencies in CI without external API rate-limit bottlenecks. Added `dependency-check-maven` 10.0.4 plugin to `backend/pom.xml` with `<failBuildOnCVSS>8</failBuildOnCVSS>` for local developer auditing.
+  - **Tightened Gitleaks Allowlist**:
+    Removed broad path exclusions (`backend/src/test/**`, `.github/workflows/**`, `README.md`, `.env.example`). Gitleaks now scans all test code, workflow files, documentation, and configuration templates. Legitimate mock fixtures (such as test JWT secret hex strings, fake OpenAI/Gemini test keys, and ephemeral smoke-test credentials) are allowlisted exclusively via exact, narrowly-scoped regex patterns.
+  - **Enforced Redis Authentication in Production**:
+    Updated `docker-compose.yml` to start Redis with `--requirepass "$REDIS_PASSWORD"` when `REDIS_PASSWORD` is supplied. Updated Redis container health check to use authenticated ping (`redis-cli -a`), and configured Spring Boot to connect using the configured password. Unauthenticated defaults remain convenient for local development.
+  - **Production MongoDB Authentication**:
+    Configured Docker Compose to support `MONGO_INITDB_ROOT_USERNAME` and `MONGO_INITDB_ROOT_PASSWORD` with an authenticated `mongosh` health check. Backend connects via authenticated `MONGODB_URI` (`mongodb://<user>:<password>@mongodb:27017/adonis?authSource=admin`). Validated end-to-end in CI smoke tests under real MongoDB authentication.
+  - **Deterministic Manual Release Dispatch (Option A)**:
+    Updated `.github/workflows/release.yml` manual dispatch (`workflow_dispatch`) to validate semantic version format (`^v[0-9]+\.[0-9]+\.[0-9]+.*$`), check remote tags for collision/drift, create and push the Git release tag to `origin`, execute all quality gates, and publish the GitHub Release with `release-manifest.json`.
+  - **Dynamic Application Release Version Propagation**:
+    Eliminated hardcoded version in `/api/health`. Spring Boot binds `adonis.app.version` (`APP_VERSION`, default `0.0.1-SNAPSHOT`). Dockerfiles accept `ARG APP_VERSION` and inject `ENV APP_VERSION`, and the release pipeline passes the semantic release tag (e.g., `v1.0.0`), exposing both dynamic release version and Git commit SHA at `/api/health`.
+  - **Deterministic Release Image Handling**:
+    Release images are tagged deterministically with both the release tag (`adonis-backend:${{ env.RELEASE_TAG }}`) and the immutable commit SHA (`adonis-backend:${{ github.sha }}`), recorded in `release-manifest.json`, and documented as verified local CI artifacts.
+  - **Added Configuration Hardening Tests**:
+    Created `ProductionConfigurationHardeningTest` asserting authenticated MongoDB URI parsing, Redis password binding, release version binding, and fail-fast JWT secret requirements in the production Spring Boot profile.
+* **Consequences**:
+  - Positive: Truly enforcing security gates, zero false positives from broad exclusions, verifiable database authentication, reliable deterministic releases, and exact version traceability.
+
+
 
 
 

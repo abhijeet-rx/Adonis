@@ -14,7 +14,9 @@ RUN sed -i 's/\r$//' mvnw && chmod +x mvnw
 RUN ./mvnw dependency:go-offline -B
 
 # Copy source code and build production JAR (tests executed in CI pipeline)
+ARG APP_VERSION=0.0.1-SNAPSHOT
 ARG GIT_COMMIT=unknown
+ENV APP_VERSION=$APP_VERSION
 ENV GIT_COMMIT=$GIT_COMMIT
 COPY backend/src src
 RUN ./mvnw clean package -DskipTests
@@ -23,7 +25,9 @@ RUN ./mvnw clean package -DskipTests
 FROM eclipse-temurin:21-jre-alpine AS runner
 WORKDIR /app
 
+ARG APP_VERSION=0.0.1-SNAPSHOT
 ARG GIT_COMMIT=unknown
+ENV APP_VERSION=$APP_VERSION
 ENV GIT_COMMIT=$GIT_COMMIT
 
 # Run as non-root dedicated application user

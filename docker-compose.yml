@@ -8,7 +8,7 @@
 
 services:
   # ----------------------------------------------------------------------------
-  # 1. MongoDB Document Persistence Service (Phase 1)
+  # 1. MongoDB Document Persistence Service (Phase 1 & Phase 12 Authenticated)
   # ----------------------------------------------------------------------------
   mongodb:
     image: mongo:7.0
@@ -24,20 +24,27 @@ services:
           memory: 1024M
     environment:
       - MONGO_INITDB_DATABASE=${MONGO_INITDB_DATABASE:-adonis}
+      - MONGO_INITDB_ROOT_USERNAME=${MONGODB_USERNAME:-}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGODB_PASSWORD:-}
     volumes:
       - mongo-data:/data/db
     networks:
       - adonis-network
     # Internal infrastructure - not exposed to host in production
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test: >
+        sh -c 'if [ -n "$$MONGO_INITDB_ROOT_PASSWORD" ]; then
+          mongosh -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --quiet --eval "db.adminCommand(\"ping\").ok"
+        else
+          mongosh --quiet --eval "db.adminCommand(\"ping\").ok"
+        fi'
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
 
   # ----------------------------------------------------------------------------
-  # 2. Redis Asynchronous Queue & Streams Service (Phase 7 & 7.1)
+  # 2. Redis Asynchronous Queue & Streams Service (Phase 7 & Phase 12 Auth)
   # ----------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -51,14 +58,26 @@ services:
         limits:
           cpus: '1.0'
           memory: 512M
-    command: redis-server --appendonly yes
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command: >
+      sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
+        exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+      else
+        exec redis-server --appendonly yes
+      fi'
     volumes:
       - redis-data:/data
     networks:
       - adonis-network
     # Internal infrastructure - not exposed to host in production
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: >
+        sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
+          redis-cli -a "$$REDIS_PASSWORD" ping | grep -q PONG
+        else
+          redis-cli ping | grep -q PONG
+        fi'
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,6 +92,7 @@ services:
       context: .
       dockerfile: docker/backend/Dockerfile
       args:
+        APP_VERSION: ${APP_VERSION:-0.0.1-SNAPSHOT}
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: adonis-backend
     restart: unless-stopped
@@ -87,7 +107,7 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       - SERVER_PORT=8080
-      - MONGODB_URI=mongodb://mongodb:27017/adonis
+      - MONGODB_URI=${MONGODB_URI:-mongodb://mongodb:27017/adonis}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
@@ -102,6 +122,7 @@ services:
       - AI_CONNECT_TIMEOUT_MS=${AI_CONNECT_TIMEOUT_MS:-10000}
       - AI_READ_TIMEOUT_MS=${AI_READ_TIMEOUT_MS:-60000}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      - APP_VERSION=${APP_VERSION:-0.0.1-SNAPSHOT}
       - GIT_COMMIT=${GIT_COMMIT:-unknown}
     networks:
       - adonis-network

@@ -34,4 +34,25 @@ class HealthControllerTest {
                 .andExpect(jsonPath("$.commit").value("unknown"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
+
+    @org.junit.jupiter.api.Nested
+    @SpringBootTest
+    @AutoConfigureMockMvc
+    @org.springframework.test.context.TestPropertySource(properties = {
+            "adonis.app.version=v1.2.3",
+            "adonis.build.commit=abcdef123456"
+    })
+    class CustomVersionTest {
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Test
+        void healthEndpointShouldReturnConfiguredVersionAndCommit() throws Exception {
+            mockMvc.perform(get("/api/health")
+                            .contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.version").value("v1.2.3"))
+                    .andExpect(jsonPath("$.commit").value("abcdef123456"));
+        }
+    }
 }
