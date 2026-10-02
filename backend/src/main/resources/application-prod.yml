@@ -1,21 +1,39 @@
+# ==============================================================================
+# Adonis Production Configuration Profile (SPRING_PROFILES_ACTIVE=prod)
+# ==============================================================================
+# Used when running inside production Docker containers or containerized clusters.
+# Infrastructure services connect via Docker DNS service names (mongodb, redis)
+# rather than localhost. All secrets and sensitive parameters are environment-driven.
+# ==============================================================================
+
 server:
   port: ${SERVER_PORT:8080}
+  shutdown: graceful
 
 spring:
   application:
     name: adonis-backend
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   data:
     mongodb:
-      uri: ${MONGODB_URI:mongodb://localhost:27017/adonis}
+      # Defaults to Docker service name 'mongodb'
+      uri: ${MONGODB_URI:mongodb://mongodb:27017/adonis}
       auto-index-creation: true
     redis:
-      host: ${REDIS_HOST:localhost}
+      # Defaults to Docker service name 'redis'
+      host: ${REDIS_HOST:redis}
       port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_TIMEOUT_MS:5000}
 
 adonis:
   jwt:
+    # Required in production: 256-bit secret key (min 32 characters)
     secret: ${JWT_SECRET}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:}
   worker:
     enabled: ${WORKER_ENABLED:true}
     stream-name: ${REDIS_STREAM_NAME:adonis:execution:stream}
@@ -44,11 +62,22 @@ adonis:
       connect-ms: ${AI_CONNECT_TIMEOUT_MS:10000}
       read-ms: ${AI_READ_TIMEOUT_MS:60000}
 
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  level:
+    root: ${LOGGING_LEVEL_ROOT:INFO}
+    com.adonis: ${LOGGING_LEVEL_ADONIS:INFO}
+    org.springframework.data.mongodb: WARN
+    org.springframework.data.redis: WARN
+
 management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,info
   endpoint:
     health:
       show-details: when-authorized
+      probes:
+        enabled: true

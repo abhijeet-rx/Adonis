@@ -604,6 +604,53 @@ This document records the architectural and technical decisions made during the 
   - Positive: High confidence in production infrastructure, automated regression testing for distributed worker crashes and concurrency races, zero external API costs or flaky network calls, unified Maven build (`./mvnw clean test`).
   - Trade-off: Running full integration tests requires a Docker daemon, increasing total test execution time compared to pure-JVM unit tests. Mitigated by container reuse (singletons) and running unit tests independently when Docker is absent.
 
+---
+
+## ADR-028: Phase 11 — Production Docker Deployment
+
+* **Status**: Accepted
+* **Date**: 2026-10-02
+* **Context**:
+  Following the successful implementation and verification of Phase 10 (Testcontainers Integration Testing), Adonis required a reproducible, production-grade containerized deployment strategy.
+  The platform consists of four distinct architectural tiers:
+  1. Frontend: React 19 SPA with client-side routing.
+  2. Backend: Java 21 LTS / Spring Boot 3.3 REST API, execution engine, worker, and scheduler.
+  3. Persistence: MongoDB 7.x document store.
+  4. Asynchronous Queue: Redis 7.x Streams and consumer groups.
+  Prior to Phase 11, container configurations were development-oriented with exposed internal ports, missing health dependencies, no SPA reverse proxy, and missing production runtime profiles.
+* **Decision**:
+  - **Docker Compose for Multi-Container Deployment**:
+    Standardized on Docker Compose v2 (`docker-compose.yml`) as the primary production-style deployment orchestrator. It unifies container build specifications, health checks, dependency graph ordering, volumes, and networking in a declarative format.
+  - **Nginx Reverse Proxy & React SPA Serving**:
+    The production frontend container utilizes `nginx:alpine` to serve static compiled assets (`dist/`) and handle client-side routing fallback (`try_files $uri $uri/ /index.html;`) avoiding 404 errors on deep SPA links (e.g., `/workflows`, `/executions`).
+    Nginx acts as the single public entrypoint on port 80, reverse-proxying `/api/` requests to `http://backend:8080/api/` with streaming and websocket upgrade headers. This eliminates cross-origin resource sharing (CORS) complexity in production by providing a unified same-origin interface to browsers.
+  - **Isolated Container Network & Unexposed Internal Services**:
+    Created a dedicated bridge network (`adonis-network`). MongoDB (27017), Redis (6379), and Spring Boot Backend (8080) communicate strictly via internal Docker DNS names (`mongodb`, `redis`, `backend`) without publishing ports to the host network interface, reducing attack surface.
+    Development port mappings are preserved separately via `docker-compose.dev.yml` for local tooling access.
+  - **Environment-Driven Configuration & Production Spring Profile**:
+    Introduced `application-prod.yml` activated via `SPRING_PROFILES_ACTIVE=prod`. All infrastructure URIs, credentials, worker parameters, and AI provider keys are injected dynamically via environment variables (`MONGODB_URI`, `REDIS_HOST`, `JWT_SECRET`, etc.).
+  - **Secret Management Hygiene**:
+    Maintained strict zero-secret commitment rules. Provided a comprehensive `.env.example` template with placeholders. All secret tokens, JWT keys, and AI credentials are injected at container runtime and sanitized in logs via `SecretRedactor`.
+  - **Hardened Multi-Stage Docker Builds**:
+    - Backend: Stage 1 builds with `eclipse-temurin:21-jdk-alpine`, running `mvn dependency:go-offline` and packaging the JAR. Stage 2 runs on minimal `eclipse-temurin:21-jre-alpine` with a dedicated non-root user (`appuser:appgroup`), optimized container memory limits (`-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0`), and no build tools or source code.
+    - Frontend: Stage 1 builds with `node:20-alpine` (`npm ci && npm run build`). Stage 2 copies only static HTML/JS/CSS assets to minimal `nginx:alpine`.
+    - Build Context: Added comprehensive `.dockerignore` files across root, backend, and frontend preventing `.git`, build outputs, dependencies, and environment files from entering Docker build contexts.
+  - **Deterministic Health Checks & Startup Dependency Graph**:
+    Implemented native health checks for all four services:
+    - MongoDB: `mongosh --eval "db.adminCommand('ping')"`
+    - Redis: `redis-cli ping`
+    - Backend: `wget -qO- http://localhost:8080/api/health`
+    - Frontend: `wget -qO- http://localhost/healthz`
+    Containers start in strict deterministic order using `condition: service_healthy` (`mongodb` + `redis` -> `backend` -> `frontend`), eliminating startup race conditions.
+  - **Persistent Named Volumes**:
+    Configured named persistent volumes `adonis_mongo_data` and `adonis_redis_data` ensuring execution histories, workflows, users, and Redis stream states survive container restarts and `docker compose down`.
+  - **Intentional Deferrals to Phase 12**:
+    Kubernetes/Helm manifests, Terraform infrastructure-as-code, cloud-specific provider integrations (AWS/GCP/Azure), Prometheus/Grafana metrics scraping, alerting infrastructure, and autoscaling are explicitly deferred to Phase 12 (CI/CD & Production Hardening).
+* **Consequences**:
+  - Positive: Complete turn-key reproducibility via `docker compose up -d`, secure default posture with unexposed databases, non-root backend execution, zero-CORS browser communication, deterministic service startup, persistent state across restarts.
+  - Trade-off: Initial cold-start image builds require fetching JDK/Node base images and dependencies (mitigated by Docker layer caching and CI pre-built steps).
+
+
 
 
 

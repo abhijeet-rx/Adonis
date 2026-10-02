@@ -173,7 +173,10 @@ export interface PageResponse<T> {
   last: boolean;
 }
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+export const API_BASE_URL =
+  typeof import.meta.env.VITE_API_BASE_URL === 'string'
+    ? import.meta.env.VITE_API_BASE_URL
+    : (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
 export const workflowApi = {
   async listWorkflows(token: string): Promise<Workflow[]> {

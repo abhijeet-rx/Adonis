@@ -1,65 +1,133 @@
+# ==============================================================================
+# Adonis Production Docker Compose Stack (Phase 11)
+# ==============================================================================
+# Architecture:
+#   Browser -> Frontend/Nginx (Port 80) -> /api/* -> Spring Boot Backend (Internal)
+#                                                 -> MongoDB 7.0 & Redis 7.0 (Internal)
+# ==============================================================================
+
 services:
-  # Adonis Spring Boot Backend Service (Java 21)
+  # ----------------------------------------------------------------------------
+  # 1. MongoDB Document Persistence Service (Phase 1)
+  # ----------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: adonis-mongodb
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_DATABASE=${MONGO_INITDB_DATABASE:-adonis}
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - adonis-network
+    # Internal infrastructure - not exposed to host in production
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ----------------------------------------------------------------------------
+  # 2. Redis Asynchronous Queue & Streams Service (Phase 7 & 7.1)
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: adonis-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - adonis-network
+    # Internal infrastructure - not exposed to host in production
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ----------------------------------------------------------------------------
+  # 3. Adonis Spring Boot Backend Service (Java 21 LTS)
+  # ----------------------------------------------------------------------------
   backend:
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
     container_name: adonis-backend
-    ports:
-      - "8080:8080"
+    restart: unless-stopped
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       - SERVER_PORT=8080
       - MONGODB_URI=mongodb://mongodb:27017/adonis
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_STREAM_NAME=adonis:execution:stream
-      - REDIS_CONSUMER_GROUP=adonis-workers
-      - JWT_SECRET=${JWT_SECRET}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_STREAM_NAME=${REDIS_STREAM_NAME:-adonis:execution:stream}
+      - REDIS_CONSUMER_GROUP=${REDIS_CONSUMER_GROUP:-adonis-workers}
+      - JWT_SECRET=${JWT_SECRET:-404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+      - JWT_EXPIRATION_MS=${JWT_EXPIRATION_MS:-86400000}
+      - WORKER_ENABLED=${WORKER_ENABLED:-true}
+      - SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-true}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - AI_CONNECT_TIMEOUT_MS=${AI_CONNECT_TIMEOUT_MS:-10000}
       - AI_READ_TIMEOUT_MS=${AI_READ_TIMEOUT_MS:-60000}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+    networks:
+      - adonis-network
     depends_on:
-      - mongodb
-      - redis
-    restart: unless-stopped
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
 
-  # Adonis React Frontend Service (Vite + Nginx)
+  # ----------------------------------------------------------------------------
+  # 4. Adonis React Frontend Service (Vite + Nginx Reverse Proxy)
+  # ----------------------------------------------------------------------------
   frontend:
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
     container_name: adonis-frontend
+    restart: unless-stopped
     ports:
-      - "5173:80"
+      # Exposes production web entrypoint to host (default port 80)
+      - "${FRONTEND_PORT:-80}:80"
+    networks:
+      - adonis-network
     depends_on:
-      - backend
-    restart: unless-stopped
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 3s
 
-  # MongoDB Persistence Service (Phase 1)
-  mongodb:
-    image: mongo:7.0
-    container_name: adonis-mongodb
-    ports:
-      - "27017:27017"
-    environment:
-      - MONGO_INITDB_DATABASE=adonis
-    volumes:
-      - mongo-data:/data/db
-    restart: unless-stopped
-
-  # Redis Asynchronous Queue Service (Phase 7 & 7.1)
-  redis:
-    image: redis:7-alpine
-    container_name: adonis-redis
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-
+# ------------------------------------------------------------------------------
+# Persistent Storage Volumes
+# ------------------------------------------------------------------------------
 volumes:
   mongo-data:
-  redis_data:
+    name: adonis_mongo_data
+  redis-data:
+    name: adonis_redis_data
+
+# ------------------------------------------------------------------------------
+# Isolated Application Network
+# ------------------------------------------------------------------------------
+networks:
+  adonis-network:
+    name: adonis-network
+    driver: bridge

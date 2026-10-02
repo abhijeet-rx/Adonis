@@ -16,9 +16,35 @@ Adonis is designed as an event-driven, developer-centric workflow orchestration 
 
 ---
 
-### 2. Current Architecture (Phase 10 Operational)
+### 2. Current Architecture (Phase 11 Operational)
 
-In Phase 10, the operational system topology integrates a comprehensive **Automated Integration Testing & Testcontainers Architecture** alongside the Phase 9 provider-neutral **AI Execution Layer** (`OpenAIProvider`, `GeminiProvider`, `PromptInterpolator`, `JsonSchemaValidator`):
+In Phase 11, the operational system topology provides a turn-key **Production Docker Deployment** orchestrating the multi-container stack (Nginx React SPA, Spring Boot Java 21 Backend, MongoDB 7.0, and Redis 7 Streams) with container networking, health checks, non-root runtimes, and persistent volumes:
+
+```text
+                    ┌─────────────────────┐
+                    │       Browser       │
+                    └──────────┬──────────┘
+                               │ HTTP (:80)
+                               ▼
+                    ┌─────────────────────┐
+                    │   Frontend/Nginx    │
+                    │   (React 19 SPA)    │
+                    └──────────┬──────────┘
+                               │
+                               │ /api/* (Internal Reverse Proxy)
+                               ▼
+                    ┌─────────────────────┐
+                    │   Spring Boot API   │
+                    │   (Java 21 / 8080)  │
+                    └───────┬───────┬─────┘
+                            │       │
+                     ┌──────┘       └──────┐
+                     ▼                     ▼
+              ┌─────────────┐       ┌─────────────┐
+              │   MongoDB   │       │    Redis    │
+              │     7.x     │       │     7.x     │
+              └─────────────┘       └─────────────┘
+```
 
 ### Trigger & Execution Layer Architecture
 
@@ -122,7 +148,7 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 | **Scheduling & Webhooks** | **Operational** (Cron, Timezones, Capability URLs, Secret Auth, Idempotency, Concurrency Hardening, State Consistency) | Phase 8, 8.1, 8.1.1 & 8.1.2 (Complete) |
 | **AI Intelligent Nodes** | **Operational** (`ai_text_generation`, `ai_structured_output`, OpenAI & Gemini SPI, Prompt Interpolation, Schema Validation) | Phase 9 (Complete) |
 | **Automated Testing & Testcontainers** | **Operational** (Real MongoDB 7.0 & Redis 7-alpine Testcontainers, LocalMockHttpServer, 17 Integration Suites, CI Enforcement) | Phase 10 (Complete) |
-| **Production Docker Deployment** | *Planned* | Phase 11 (Planned) |
+| **Production Docker Deployment** | **Operational** (Multi-stage images, non-root backend, Nginx SPA serving & /api proxy, health checks, dependency ordering, persistent named volumes, isolated adonis-network) | Phase 11 (Complete) |
 | **CI/CD & Production Hardening** | *Planned* | Phase 12 (Planned) |
 
 ### Phase Status Overview
@@ -145,7 +171,7 @@ MongoDB (Spring Data MongoDB, 7.0 container)
 - **Phase 8.1.2** — Complete: Scheduler State Consistency Hardening
 - **Phase 9** — Complete: AI Intelligent Nodes (OpenAI & Gemini SPI)
 - **Phase 10** — Complete: Testcontainers Integration Testing (MongoDB 7.0 + Redis 7-alpine)
-- **Phase 11** — Planned: Production Docker Deployment
+- **Phase 11** — Complete: Production Docker Deployment (Multi-stage builds, Nginx SPA & API reverse proxy, healthchecks, dependency orchestration, non-root runner, persistent volumes)
 - **Phase 12** — Planned: CI/CD & Production Hardening
 
 > **Historical Note (Phase 6 In-Process Execution)**:
@@ -893,6 +919,103 @@ The Phase 10 test suite is organized into distinct subpackages under `com.adonis
 | `webhook` | `WebhookIntegrationTest` | Capability URL routing, constant-time secret authentication, execution enqueuing, and lifecycle isolation. |
 | `webhook` | `WebhookIdempotencyIntegrationTest` | `Idempotency-Key` deduplication and atomic recovery under concurrent webhook deliveries. |
 | `e2e` | `EndToEndWorkflowIntegrationTest` | Flagship end-to-end integration: Webhook ingestion → HTTP Node (200) → AI Node (429 retry then 200) → Structured JSON Schema Validation → Redis Stream → ExecutionWorker → MongoDB execution history with attempt tracking. |
+
+---
+
+## 13. Production Docker Deployment Architecture (Phase 11 Operational)
+
+Phase 11 delivers a fully containerized, reproducible production deployment topology orchestrating the full-stack Adonis platform using Docker Compose v2.
+
+### 13.1 Container Architecture & Data Flow
+
+```text
+                                  ┌──────────────────────────┐
+                                  │      Client Browser      │
+                                  └─────────────┬────────────┘
+                                                │ HTTP :80
+                                                ▼
+                        ┌──────────────────────────────────────────────┐
+                        │             adonis-frontend                  │
+                        │       (nginx:alpine / React 19 SPA)          │
+                        │                                              │
+                        │  - Serves static assets from /dist           │
+                        │  - Client-side SPA routing (try_files)       │
+                        │  - Reverse proxies /api/ -> backend:8080     │
+                        │  - Healthcheck: /healthz                     │
+                        └──────────────────────┬───────────────────────┘
+                                               │
+                                               │ Internal HTTP :8080 (adonis-network)
+                                               ▼
+                        ┌──────────────────────────────────────────────┐
+                        │              adonis-backend                  │
+                        │   (Java 21 JRE / Spring Boot 3.3.4 / prod)   │
+                        │                                              │
+                        │  - REST API & Execution Engine               │
+                        │  - Redis Streams Worker & Scheduler          │
+                        │  - Runs as non-root user: appuser            │
+                        │  - Healthcheck: /api/health                  │
+                        └──────────────┬────────────────┬──────────────┘
+                                       │                │
+            Internal MongoDB :27017    │                │ Internal Redis :6379
+                                       ▼                ▼
+         ┌───────────────────────────────┐    ┌───────────────────────────────┐
+         │        adonis-mongodb         │    │         adonis-redis          │
+         │          (mongo:7.0)          │    │        (redis:7-alpine)       │
+         │                               │    │                               │
+         │ - Document store & indexes    │    │ - Redis Streams & PEL         │
+         │ - Volume: adonis_mongo_data   │    │ - Volume: adonis_redis_data   │
+         │ - Healthcheck: mongosh ping   │    │ - Healthcheck: redis-cli ping │
+         └───────────────────────────────┘    └───────────────────────────────┘
+```
+
+### 13.2 Nginx Reverse Proxy & React SPA Routing
+
+The production frontend container serves the React 19 single-page application and handles API routing:
+1. **SPA Routing Fallback**: Configured with `try_files $uri $uri/ /index.html;`, ensuring client-side routes (e.g. `/workflows`, `/workflows/:id`, `/executions`) resolve cleanly without 404 errors.
+2. **Reverse Proxying**: Proxies `/api/` requests to `http://backend:8080/api/` with HTTP/1.1 keep-alive and proxy headers (`X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`).
+3. **Zero-CORS Browser Architecture**: Because the browser communicates solely with Nginx on port 80, all UI and API interactions are same-origin. Cross-origin resource sharing (CORS) friction and preflight overhead are eliminated in production.
+4. **Proxy Timeouts**: Configured with 120-second read and send timeouts to accommodate long-running AI node generations and complex workflow graphs.
+
+### 13.3 Container Security & Hardened Multi-Stage Builds
+
+Both frontend and backend utilize hardened multi-stage Docker builds:
+- **Backend (`docker/backend/Dockerfile`)**:
+  - *Stage 1 (Builder)*: Uses `eclipse-temurin:21-jdk-alpine`. Caches Maven dependencies via `dependency:go-offline` and compiles the production JAR (`mvn clean package -DskipTests`).
+  - *Stage 2 (Runner)*: Uses minimal `eclipse-temurin:21-jre-alpine`. Creates a dedicated non-root group and user (`appuser:appgroup`). Runs exclusively as `appuser`.
+  - *JVM Optimization*: Applies container-aware memory allocation flags (`-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0`).
+- **Frontend (`docker/frontend/Dockerfile`)**:
+  - *Stage 1 (Builder)*: Uses `node:20-alpine` (`npm ci && npm run build`).
+  - *Stage 2 (Runner)*: Uses `nginx:alpine` to serve compiled static assets (`dist/`), discarding Node.js runtime and build toolchains.
+- **Build Context Cleanliness**:
+  - Comprehensive `.dockerignore` files across the repository root, backend, and frontend prevent source control metadata (`.git`), build outputs (`target/`, `dist/`), dependency caches (`node_modules/`), and environment files (`.env`) from entering container contexts.
+
+### 13.4 Network Isolation & Port Security
+
+- **Isolated Bridge Network**: All four services join the private `adonis-network` bridge.
+- **Port Exposure Policy**:
+  - **Exposed to Host**: Port 80 (Frontend / Nginx).
+  - **Internal Only**: Backend (8080), MongoDB (27017), and Redis (6379) are unexposed to the host network interface in production. They communicate exclusively across `adonis-network` via Docker DNS service names (`backend`, `mongodb`, `redis`).
+  - **Development Override**: `docker-compose.dev.yml` provides optional host port mappings (27017, 6379, 8080) for local debugging and database exploration without compromising production defaults.
+
+### 13.5 Health Checks & Startup Dependency Orchestration
+
+To prevent race conditions during startup, all services declare explicit health checks and dependency conditions (`condition: service_healthy`):
+1. **Tier 1 (Infrastructure)**: `mongodb` (via `mongosh`) and `redis` (via `redis-cli ping`) start first and must achieve `healthy` status.
+2. **Tier 2 (Application Backend)**: `backend` starts only after both MongoDB and Redis are healthy. It validates database connectivity and Redis stream initialization, exposing its health status at `/api/health`.
+3. **Tier 3 (Application Frontend)**: `frontend` starts only after `backend` achieves `healthy` status, exposing `/healthz` on Nginx.
+
+### 13.6 Persistent Storage & Data Durability
+
+- **MongoDB Persistence**: Mapped to named volume `adonis_mongo_data` (`/data/db`), preserving user accounts, workflows, execution histories, and indexes across container restarts and `docker compose down`.
+- **Redis Persistence**: Configured with Append-Only File logging (`--appendonly yes`) mapped to named volume `adonis_redis_data` (`/data`), preserving stream entries, consumer group state, and pending entry lists (PEL) across restarts.
+
+### 13.7 Environment-Driven Configuration & Secret Management
+
+- **Spring Production Profile**: Activated via `SPRING_PROFILES_ACTIVE=prod`, loading `application-prod.yml`.
+- **Strict Secret Hygiene**: Zero hardcoded secrets in Dockerfiles, Compose files, or Git history.
+- **`.env.example` Template**: Provides verified placeholders for `JWT_SECRET`, database URIs, queue names, and AI provider keys.
+- **Audit Logging**: Production console logging filters sensitive tokens, authorization headers, and OpenAI/Gemini API keys via `SecretRedactor`.
+
 
 
 

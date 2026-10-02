@@ -22,7 +22,7 @@ import {
   Trash2,
   FolderGit2
 } from 'lucide-react';
-import { workflowApi, type Workflow, type WorkflowStatus } from './services/workflowService';
+import { workflowApi, type Workflow, type WorkflowStatus, API_BASE_URL } from './services/workflowService';
 import { WorkflowBuilder } from './components/workflow/WorkflowBuilder';
 
 interface HealthData {
@@ -45,7 +45,6 @@ interface AuthSuccessResponse {
   user: UserProfile;
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 const TOKEN_STORAGE_KEY = 'adonis_access_token';
 
 export const App: React.FC = () => {

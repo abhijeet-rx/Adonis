@@ -13,10 +13,23 @@ public class WebConfig implements WebMvcConfigurer {
             "http://localhost:3000"
     };
 
+    @org.springframework.beans.factory.annotation.Value("${adonis.cors.allowed-origins:}")
+    private String configuredOrigins;
+
     @Override
     public void addCorsMappings(CorsRegistry registry) {
+        java.util.List<String> origins = new java.util.ArrayList<>(java.util.Arrays.asList(ALLOWED_DEV_ORIGINS));
+        if (configuredOrigins != null && !configuredOrigins.isBlank()) {
+            for (String origin : configuredOrigins.split(",")) {
+                String trimmed = origin.trim();
+                if (!trimmed.isEmpty() && !origins.contains(trimmed)) {
+                    origins.add(trimmed);
+                }
+            }
+        }
+
         registry.addMapping("/api/**")
-                .allowedOrigins(ALLOWED_DEV_ORIGINS)
+                .allowedOrigins(origins.toArray(new String[0]))
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")
                 .allowedHeaders("*")
                 .allowCredentials(true);

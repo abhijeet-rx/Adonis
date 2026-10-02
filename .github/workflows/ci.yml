@@ -52,3 +52,66 @@ jobs:
       - name: Typecheck and Build
         working-directory: frontend
         run: npm run build
+
+  docker:
+    name: Docker Deployment Validation & Smoke Test
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose Configuration
+        run: docker compose config
+
+      - name: Build Production Docker Images
+        run: docker compose build
+
+      - name: Start Production Stack
+        run: |
+          docker compose up -d
+          echo "Waiting for services to become healthy..."
+          timeout 120s bash -c 'until [ "$(docker inspect -f {{.State.Health.Status}} adonis-frontend 2>/dev/null)" = "healthy" ]; do
+            echo "Waiting for frontend (current: $(docker inspect -f {{.State.Health.Status}} adonis-frontend 2>/dev/null))..."
+            sleep 3
+          done'
+          docker compose ps
+
+      - name: Output Logs on Failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Production Stack Smoke Test
+        run: |
+          echo "=== 1. Testing Frontend SPA on Port 80 ==="
+          curl -sSf http://localhost/ | grep -q "Adonis" || (echo "Frontend root HTML test failed" && exit 1)
+
+          echo "=== 2. Testing Frontend /healthz Endpoint ==="
+          curl -sSf http://localhost/healthz
+
+          echo "=== 3. Testing Backend /api/health through Nginx Reverse Proxy ==="
+          HEALTH_JSON=$(curl -sSf http://localhost/api/health)
+          echo "Health response: $HEALTH_JSON"
+          echo "$HEALTH_JSON" | grep -q '"status":"UP"' || (echo "Backend health check failed" && exit 1)
+
+          echo "=== 4. Testing Authentication API through Reverse Proxy ==="
+          REGISTER_RES=$(curl -sSf -X POST http://localhost/api/auth/register \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Smoke Tester","email":"smoke@example.com","password":"Password123!"}')
+          echo "Register response: $REGISTER_RES"
+          TOKEN=$(echo "$REGISTER_RES" | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to obtain auth token"
+            exit 1
+          fi
+
+          echo "=== 5. Testing Protected API /api/users/me ==="
+          ME_RES=$(curl -sSf -H "Authorization: Bearer $TOKEN" http://localhost/api/users/me)
+          echo "User profile: $ME_RES"
+          echo "$ME_RES" | grep -q "smoke@example.com" || (echo "Profile check failed" && exit 1)
+
+          echo "=== All Docker deployment smoke tests passed successfully! ==="
+
+      - name: Tear Down Stack
+        if: always()
+        run: docker compose down -v

@@ -8,17 +8,17 @@ Adonis enables developers to design, schedule, and execute automated event-drive
 
 ## Current Development Phase
 
-**Phase 10 — Automated Integration Testing + Testcontainers** *(Completed)*
+**Phase 11 — Production Docker Deployment** *(Completed)*
 
-This phase adds automated integration testing with real containerized dependencies using Testcontainers, validating the end-to-end infrastructure of Adonis without external API dependencies:
-- **Real Infrastructure Validation**: Replaced in-memory approximations in the integration test suite with genuine Docker containers running official `mongo:7.0` and `redis:7-alpine`.
-- **Redis Streams & Distributed Worker Verification**: Validated XADD, consumer groups (`XREADGROUP`), atomic MongoDB claiming (`findAndModify`), background heartbeat lease renewals, expired lease takeover, and PEL recovery via `XCLAIM`.
-- **Scheduler Concurrency & State Consistency**: Verified distributed lock safety, idempotency of fire time evaluation, schedule modification race resilience, and unique scheduled occurrence constraints under concurrent evaluation.
-- **Webhook Pipeline & Idempotency**: Verified capability URL routing, constant-time secret authentication, execution enqueuing, and `Idempotency-Key` deduplication under concurrent delivery.
-- **Execution & Retry Policies**: Verified HTTP node status matrix (2xx, 4xx, 5xx, timeouts) and AI node failure classification (429/5xx retryable vs 4xx non-retryable) with granular attempt history persisted in MongoDB.
-- **Local Mock HTTP Server**: Built-in zero-dependency JDK `HttpServer` mocking external HTTP targets, OpenAI (`/openai/chat/completions`), and Google Gemini (`/gemini/models`) endpoints with request inspection and canned response queues.
-- **Flagship End-to-End Test**: Complete pipeline validation: Webhook Trigger → HTTP Request Node → AI Node (429 rate limit retried to 200) → Structured JSON Schema Validation → Redis Stream → ExecutionWorker → MongoDB execution history with attempt tracking.
-- **Preserved Fast Feedback**: All existing unit and slice tests preserved; integration tests run seamlessly via `./mvnw clean test` with dynamic Docker detection and strict CI enforcement.
+This phase implements a production-style containerized deployment architecture for Adonis using Docker Compose v2:
+- **Unified Production Architecture**: Fronted by Nginx on port 80 serving the compiled React 19 SPA and reverse-proxying `/api/*` to the Spring Boot backend, eliminating CORS overhead in production.
+- **Client-Side SPA Routing**: Nginx configured with `try_files $uri $uri/ /index.html;` to ensure deep React routes (`/workflows`, `/executions`) resolve cleanly without 404 errors.
+- **Hardened Multi-Stage Dockerfiles**: Multi-stage builds for both Java 21 Spring Boot (`eclipse-temurin:21-jre-alpine` running as dedicated non-root user `appuser`) and React SPA (`nginx:alpine`), minimizing image attack surfaces.
+- **Internal Network Security**: MongoDB 7.0 and Redis 7.0 remain internal to the dedicated bridge network (`adonis-network`), unexposed to the host network interface in production.
+- **Native Health Checks & Dependency Ordering**: All services declare explicit health checks (`mongosh`, `redis-cli ping`, `/api/health`, `/healthz`) and start deterministically with `condition: service_healthy`.
+- **Persistent Named Volumes**: Database documents, unique indexes, and Redis Streams/PEL data are persisted across restarts in named volumes (`adonis_mongo_data`, `adonis_redis_data`).
+- **Environment-Driven Configuration**: Production configuration profile (`SPRING_PROFILES_ACTIVE=prod`) loading `application-prod.yml` with comprehensive `.env.example` template and zero committed secrets.
+- **Development Port Overrides**: Dedicated `docker-compose.dev.yml` allowing developers to expose internal database/queue ports for local debugging when needed.
 
 ---
 
@@ -436,9 +436,107 @@ cd backend
 
 ---
 
+## Production Docker Deployment (Phase 11)
+
+Adonis provides a turn-key, production-style multi-container deployment orchestrated via Docker Compose v2.
+
+### Architecture
+
+```text
+                    ┌─────────────────────┐
+                    │       Browser       │
+                    └──────────┬──────────┘
+                               │ HTTP (:80)
+                               ▼
+                    ┌─────────────────────┐
+                    │   Frontend/Nginx    │
+                    │   (React 19 SPA)    │
+                    └──────────┬──────────┘
+                               │
+                               │ /api/* (Internal Reverse Proxy)
+                               ▼
+                    ┌─────────────────────┐
+                    │   Spring Boot API   │
+                    │   (Java 21 / 8080)  │
+                    └───────┬───────┬─────┘
+                            │       │
+                     ┌──────┘       └──────┐
+                     ▼                     ▼
+              ┌─────────────┐       ┌─────────────┐
+              │   MongoDB   │       │    Redis    │
+              │     7.x     │       │     7.x     │
+              └─────────────┘       └─────────────┘
+```
+
+### Prerequisites
+- [Docker](https://docs.docker.com/engine/install/) (v24.0+)
+- [Docker Compose](https://docs.docker.com/compose/) (v2.20+)
+
+### Quick Start
+
+1. **Configure Environment Variables**:
+   Copy the provided `.env.example` template:
+   ```bash
+   cp .env.example .env
+   ```
+   Configure a secure 256-bit JWT secret:
+   ```bash
+   # On Linux/macOS:
+   openssl rand -hex 32
+   # On Windows (PowerShell):
+   -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+   ```
+   Set `JWT_SECRET` in `.env`.
+
+2. **Start the Production Stack**:
+   ```bash
+   docker compose up --build -d
+   ```
+
+3. **Check Service Health & Status**:
+   ```bash
+   docker compose ps
+   ```
+   All services (`adonis-mongodb`, `adonis-redis`, `adonis-backend`, `adonis-frontend`) will report `healthy`.
+
+4. **Access the Application**:
+   - **Frontend UI**: [http://localhost](http://localhost) (Default Port 80)
+   - **Backend Health Check**: [http://localhost/api/health](http://localhost/api/health)
+   - **Spring Actuator Health**: [http://localhost/actuator/health](http://localhost/actuator/health)
+
+5. **View Container Logs**:
+   ```bash
+   # Stream all logs:
+   docker compose logs -f
+
+   # Stream specific service logs:
+   docker compose logs -f backend
+   docker compose logs -f frontend
+   ```
+
+6. **Stop the Stack (Preserves Persistent Data)**:
+   ```bash
+   docker compose down
+   ```
+   > **Data Safety**: Stopping containers with `docker compose down` safely preserves all database documents, workflows, execution histories, and Redis streams in persistent named volumes (`adonis_mongo_data`, `adonis_redis_data`).
+
+7. **Reset Data (Delete Persistent Volumes)**:
+   ```bash
+   docker compose down -v
+   ```
+   > ⚠️ **Warning**: The `-v` flag permanently removes named volumes (`adonis_mongo_data` and `adonis_redis_data`), resetting MongoDB and Redis to a completely clean state.
+
+### Local Development Port Overrides
+To expose internal database and backend ports (MongoDB on `27017`, Redis on `6379`, Backend on `8080`, Frontend on `5173`) for local development tools (MongoDB Compass, redis-cli, IDEs):
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+
+---
+
 ## Current Status vs. Planned Milestones
 
-- **Current (Phase 0 through Phase 10 — Operational)**:
+- **Current (Phase 0 through Phase 11 — Operational)**:
   - Clean monorepo layout (`backend`, `frontend`, `docker`, `.github/workflows`)
   - Java 21 LTS + Spring Boot 3.3.4 foundation with `/api/health` diagnostic endpoint
   - MongoDB 7.0 persistence (`users`, `workflows`, `workflow_executions`, and `scheduled_occurrences` collections)
@@ -477,12 +575,11 @@ cd backend
   - Paginated execution history endpoints (`GET /api/workflows/{id}/executions`, `GET /api/executions`) and detailed execution inspector (`GET /api/executions/{id}`)
   - Execution history panel with trigger badges (`MANUAL`, `SCHEDULE`, `WEBHOOK`), pagination, and enhanced execution results modal inspecting node inputs, outputs, errors, skipped steps, and attempt histories
   - Controlled frontend execution polling (every 1.5s) until terminal execution state (`SUCCESS` or `FAILED`)
-  - Multi-stage Docker configurations and Docker Compose with `backend`, `frontend`, `mongodb`, and `redis`
+  - Hardened multi-stage Docker builds and Docker Compose production deployment (`docker-compose.yml`) with Nginx SPA serving, reverse proxying, non-root backend runner (`appuser`), internal database networking (`adonis-network`), health checks, and persistent volumes (`adonis_mongo_data`, `adonis_redis_data`)
   - Testcontainers integration test suite with real MongoDB 7.0 and Redis 7 Alpine containers, Local Mock HTTP Server, and full infrastructure verification
-  - Automated GitHub Actions CI pipeline (backend unit & integration tests & frontend build)
+  - Automated GitHub Actions CI pipeline (backend unit & integration tests, frontend build & lint, Docker Compose deployment validation & smoke test)
 
-- **Planned Functionality (Phases 11–12)**:
-  - Production Docker & deployment (Planned for Phase 11)
+- **Planned Functionality (Phase 12)**:
   - CI/CD & production hardening (Planned for Phase 12)
 
 ---
@@ -505,7 +602,7 @@ cd backend
 - [x] **Phase 8.1.2 — Scheduler State Consistency Hardening**
 - [x] **Phase 9 — AI Nodes**
 - [x] **Phase 10 — Automated Testing + Testcontainers**
-- [ ] **Phase 11 — Docker + Deployment**
+- [x] **Phase 11 — Production Docker Deployment**
 - [ ] **Phase 12 — GitHub Actions CI/CD + Production Hardening**
 
 
